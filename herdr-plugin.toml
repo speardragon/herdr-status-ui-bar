@@ -1,0 +1,16 @@
+id = "speardragon.herdr-status-ui-bar"
+name = "Agent Usage Bar"
+version = "0.1.0"
+min_herdr_version = "0.8.0"
+description = "AI agent plan-usage gauges (Claude Code / Codex / Grok) in the herdr tab bar"
+platforms = ["macos", "linux"]
+
+[[actions]]
+id = "install"
+title = "Install agent usage tab-bar widget"
+command = ["./install.sh"]
+
+[[actions]]
+id = "uninstall"
+title = "Uninstall agent usage tab-bar widget"
+command = ["./uninstall.sh"]
