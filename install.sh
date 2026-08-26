@@ -29,14 +29,16 @@ CONFIG_TOML="$CONFIG_DIR/config.toml" STAMP="$STAMP" python3 - <<'PY'
 import os, re, shutil, sys
 
 path = os.environ["CONFIG_TOML"]
-widget = '  { type = "command", command = "~/.config/herdr/agent-usage/agent_usage.py", interval_seconds = 300, timeout_seconds = 5 },\n'
+widget_cmd = 'command = "~/.config/herdr/agent-usage/agent_usage.py"'
+widget = f'  {{ type = "command", {widget_cmd}, interval_seconds = 300, timeout_seconds = 5 }},\n'
 
 text = ""
 if os.path.exists(path):
     with open(path) as f:
         text = f.read()
 
-if "agent-usage/agent_usage.py" in text:
+# 멱등 판단은 정확한 위젯 command 문자열로만 — 경로가 주석 등에 언급돼도 오탐하지 않게.
+if widget_cmd in text:
     print("config.toml: widget already registered — skipped")
     sys.exit(0)
 
@@ -45,8 +47,8 @@ if os.path.exists(path):
 
 array_match = re.search(r"tab_bar_right\s*=\s*\[", text)
 if array_match:
-    # 배열의 닫는 ']'를 대괄호 깊이로 찾는다 (문자열 내 대괄호는 미고려 — 위젯 커맨드에
-    # 대괄호가 들어가는 비정형 config는 v0.1에서 미지원, README에 명시)
+    # 배열의 닫는 ']'를 대괄호 깊이로 찾는다. 문자열 내부의 대괄호는 인식하지 못하므로,
+    # 쓰기 전에 tomllib로 결과를 검증해 비정형 config에서는 무변경으로 중단한다 (아래).
     depth, pos = 1, array_match.end()
     while pos < len(text) and depth:
         if text[pos] == "[":
@@ -66,6 +68,22 @@ elif re.search(r"^\[ui\]\s*$", text, re.M):
 else:
     new_text = text + f"\n[ui]\ntab_bar_right = [\n{widget}]\n"
 
+# 파일에 쓰기 전에 결과 TOML 유효성 검증 (tomllib은 3.11+ — 없으면 검증 생략).
+# 검증 실패 = 괄호 카운터가 못 다루는 비정형 config → 아무것도 쓰지 않고 수동 등록 안내.
+try:
+    import tomllib
+except ImportError:
+    tomllib = None
+if tomllib is not None:
+    try:
+        tomllib.loads(new_text)
+    except tomllib.TOMLDecodeError as exc:
+        sys.exit(
+            "error: could not add the widget automatically (unusual config.toml layout: "
+            f"{exc}).\nYour config.toml was left unchanged. Add this line to [ui].tab_bar_right manually:\n"
+            f"{widget.rstrip()}"
+        )
+
 with open(path, "w") as f:
     f.write(new_text)
 print("config.toml: widget registered")
@@ -83,8 +101,12 @@ import json, os, shutil, stat
 settings_path = os.environ["CLAUDE_SETTINGS"]
 dest = os.environ["DEST_DIR"]
 
-with open(settings_path) as f:
-    settings = json.load(f)
+try:
+    with open(settings_path) as f:
+        settings = json.load(f)
+except (json.JSONDecodeError, ValueError):
+    print("claude capture: settings.json is not valid JSON — skipped (fix it and re-run install.sh)")
+    raise SystemExit(0)
 
 status = settings.get("statusLine") or {}
 original = status.get("command")

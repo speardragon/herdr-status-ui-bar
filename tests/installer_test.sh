@@ -90,4 +90,34 @@ import tomllib,os
 tomllib.load(open(os.environ['HERDR_CONFIG_DIR']+'/config.toml','rb'))
 " 2>/dev/null || python3 -c "print('tomllib 없음(3.9/3.10) — TOML 파싱 검증 생략')"
 
-echo "PASS (6/6)"
+# 7) 비정형 config — 기존 위젯 command 문자열 안에 ']'가 있으면 자동 등록을 거부하고 config 무변경
+cat > "$HERDR_CONFIG_DIR/config.toml" <<'EOF'
+[ui]
+tab_bar_right = [
+  { type = "command", command = "echo hi] there", interval_seconds = 5, timeout_seconds = 2 },
+]
+EOF
+cp "$HERDR_CONFIG_DIR/config.toml" "$FIX/before-weird.toml"
+if "$REPO/install.sh" > "$FIX/weird-out.log" 2>&1; then
+  # tomllib 없는 파이썬(3.9/3.10)에선 검증이 생략돼 통과할 수 있다 — tomllib이 있는데 성공했으면 실패
+  python3 -c "import tomllib" 2>/dev/null && fail "비정형 config에서 성공 종료 (tomllib 검증 미작동)" || true
+else
+  cmp -s "$HERDR_CONFIG_DIR/config.toml" "$FIX/before-weird.toml" || fail "등록 실패 시 config가 변경됨 (무변경 보장 위반)"
+  grep -q "manually" "$FIX/weird-out.log" || fail "수동 등록 안내 부재"
+fi
+
+# 8) 경로 문자열이 든 무관한 주석 — 설치는 정상 진행되고, 제거는 주석을 안 건드린다
+cat > "$HERDR_CONFIG_DIR/config.toml" <<'EOF'
+[ui]
+# NOTE: agent-usage/agent_usage.py is documented here — do not remove
+tab_bar_right = [
+  { type = "zoom" },
+]
+EOF
+"$REPO/install.sh" > /dev/null
+grep -c 'command = "~/.config/herdr/agent-usage/agent_usage.py"' "$HERDR_CONFIG_DIR/config.toml" | grep -qx 1 || fail "주석 존재 시 설치 안 됨 (거짓 멱등)"
+"$REPO/uninstall.sh" > /dev/null
+grep -q "# NOTE: agent-usage/agent_usage.py is documented here" "$HERDR_CONFIG_DIR/config.toml" || fail "무관 주석 오삭제"
+grep -q 'command = "~/.config/herdr/agent-usage/agent_usage.py"' "$HERDR_CONFIG_DIR/config.toml" && fail "위젯 라인 잔존" || true
+
+echo "PASS (8/8)"

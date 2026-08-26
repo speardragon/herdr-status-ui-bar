@@ -16,7 +16,9 @@ import os
 path = os.environ["CONFIG_TOML"]
 with open(path) as f:
     lines = f.readlines()
-kept = [l for l in lines if "agent-usage/agent_usage.py" not in l]
+# 삭제 판단도 정확한 위젯 command 문자열로만 — 경로가 주석 등에 언급된 라인을 오삭제하지 않게.
+marker = 'command = "~/.config/herdr/agent-usage/agent_usage.py"'
+kept = [l for l in lines if marker not in l]
 if len(kept) != len(lines):
     with open(path, "w") as f:
         f.writelines(kept)
@@ -34,8 +36,12 @@ import json, os
 settings_path = os.environ["CLAUDE_SETTINGS"]
 dest = os.environ["DEST_DIR"]
 
-with open(settings_path) as f:
-    settings = json.load(f)
+try:
+    with open(settings_path) as f:
+        settings = json.load(f)
+except (json.JSONDecodeError, ValueError):
+    print("statusline: settings.json is not valid JSON — left untouched")
+    raise SystemExit(0)
 with open(os.path.join(dest, "statusline-original.json")) as f:
     original = json.load(f)["command"]
 
