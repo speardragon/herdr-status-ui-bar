@@ -3,12 +3,13 @@
 Plan-usage gauges for your AI coding agents — **Claude Code, OpenAI Codex, and Grok CLI** — rendered in the [herdr](https://herdr.dev) tab bar.
 
 ```
-⛅ +29°C · claude ██░░░ 39%/40% codex ██░░░ 32%* grok █░░░░ 8% @13:04
+⛅ +29°C · claude ████░░░░░░ 39%/40% │ codex ███░░░░░░░ 32%* │ grok █░░░░░░░░░ 8% │ @13:04
 ```
 
 - `claude 5h%/7d%` — Claude Code rate-limit windows, captured passively from your statusline (no network, no credentials)
 - `codex 30d%` — read locally from `~/.codex/sessions` rollout logs
 - `grok credit%` — one lightweight call to the Grok CLI billing API, cached with graceful fallback
+- gauge = 10 cells (10% each); ` │ ` separates each agent segment (also before the timestamp)
 - `@HH:MM` — when the data was read (the widget refreshes every 5 minutes) · `*` — the source data is stale
 - Segments for agents you don't use are silently omitted. Zero external dependencies beyond python3 (3.9+) and curl.
 
@@ -26,6 +27,8 @@ Or directly:
 ```
 git clone https://github.com/speardragon/herdr-status-ui-bar && cd herdr-status-ui-bar && ./install.sh
 ```
+
+To skip wrapping your Claude Code statusline (widget still runs, just without the claude segment): `AGENT_USAGE_SKIP_CLAUDE=1 ./install.sh`
 
 What `install.sh` does (idempotent; anything it touches is backed up as `*.bak-agent-usage-<timestamp>`):
 
@@ -57,6 +60,8 @@ The Grok token is never passed as a curl argument — it's sent via stdin config
 ```
 ./uninstall.sh   # or the plugin's uninstall action — restores your original statusline
 ```
+
+Backups (`*.bak-agent-usage-<timestamp>`) created by `install.sh` are left in place intentionally — uninstall does not delete them, so you can always recover a pre-install file by hand.
 
 ## License
 

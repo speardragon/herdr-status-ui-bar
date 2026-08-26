@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """herdr 탭 바 위젯: AI 에이전트 플랜 한도 사용률 (자체 구현, 무설치).
 
-출력 예: "claude █░░░░ 12%/30% codex ██░░░ 32% grok █░░░░ 8% @12:48"
-        (claude 5h/7d · codex 30일 · grok 크레딧 — 게이지 5칸 = 사용률, @HH:MM = 데이터 읽은 시각)
+출력 예: "claude █░░░░░░░░░ 12%/30% │ codex ███░░░░░░░ 32% │ grok █░░░░░░░░░ 8% │ @12:48"
+        (claude 5h/7d · codex 30일 · grok 크레딧 — 게이지 10칸 = 사용률, │ = 세그먼트 구분선, @HH:MM = 데이터 읽은 시각)
         --color 플래그 시 세그먼트별 브랜드 컬러(truecolor SGR) + dim 타임스탬프.
 - claude: statusline 캡처 파일(~/.claude/.last-statusline.json) — 로컬
 - codex:  ~/.codex/sessions/**/*.jsonl 마지막 rate_limits — 로컬
@@ -41,11 +41,11 @@ def pct(value) -> str | None:
     return None
 
 
-GAUGE_CELLS = 5
+GAUGE_CELLS = 10
 
 
 def gauge(value) -> str:
-    """0–100 값을 █░ 5칸 게이지로 — 0 초과면 최소 1칸은 채운다."""
+    """0–100 값을 █░ 10칸 게이지로 — 0 초과면 최소 1칸은 채운다."""
     clamped = min(100, max(0, value)) if isinstance(value, (int, float)) else 0
     filled = 0 if clamped <= 0 else min(GAUGE_CELLS, max(1, round(clamped / 100 * GAUGE_CELLS)))
     return "█" * filled + "░" * (GAUGE_CELLS - filled)
@@ -243,7 +243,7 @@ def main() -> None:
     if parts:
         stamp = datetime.fromtimestamp(now()).strftime("%H:%M")
         parts.append(f"\x1b[2m@{stamp}\x1b[0m" if color else f"@{stamp}")
-    print(" ".join(parts))
+    print(" │ ".join(parts))
 
 
 if __name__ == "__main__":

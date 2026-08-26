@@ -31,7 +31,7 @@ base=(env NOW_EPOCH="$T0" CLAUDE_STATUS_FILE="$DIR/statusline.json" CODEX_SESSIO
 
 # 1) 3종 기본 포맷 — 풀네임 + 타임스탬프
 out=$("${base[@]}" GROK_FETCH_CMD="cat '$DIR/billing.json'" "$SCRIPT")
-[ "$out" = "claude █░░░░ 12%/30% codex ██░░░ 32% grok █░░░░ 5% @$TS0" ] || fail "기본 포맷: got '$out'"
+[ "$out" = "claude █░░░░░░░░░ 12%/30% │ codex ███░░░░░░░ 32% │ grok █░░░░░░░░░ 5% │ @$TS0" ] || fail "기본 포맷: got '$out'"
 
 # 2) grok 성공 시 캐시 생성
 [ -f "$DIR/grok_cache.json" ] || fail "grok 캐시 미생성"
@@ -39,11 +39,11 @@ grep -q creditUsagePercent "$DIR/grok_cache.json" || fail "grok 캐시 내용 �
 
 # 3) grok fetch 실패 → 캐시 fallback
 out=$("${base[@]}" GROK_FETCH_CMD="false" "$SCRIPT")
-[ "$out" = "claude █░░░░ 12%/30% codex ██░░░ 32% grok █░░░░ 5% @$TS0" ] || fail "grok 캐시 fallback: got '$out'"
+[ "$out" = "claude █░░░░░░░░░ 12%/30% │ codex ███░░░░░░░ 32% │ grok █░░░░░░░░░ 5% │ @$TS0" ] || fail "grok 캐시 fallback: got '$out'"
 
 # 4) 스테일 마커 — NOW_EPOCH = mtime + 25h
 out=$(env NOW_EPOCH="$T1" CLAUDE_STATUS_FILE="$DIR/statusline.json" CODEX_SESSIONS_DIR="$DIR/sessions" GROK_CACHE_FILE="$DIR/grok_cache.json" GROK_FETCH_CMD="false" "$SCRIPT")
-[ "$out" = "claude █░░░░ 12%/30%* codex ██░░░ 32%* grok █░░░░ 5%* @$TS1" ] || fail "스테일 마커: got '$out'"
+[ "$out" = "claude █░░░░░░░░░ 12%/30%* │ codex ███░░░░░░░ 32%* │ grok █░░░░░░░░░ 5%* │ @$TS1" ] || fail "스테일 마커: got '$out'"
 
 # 5) 전부 결측 → 빈 출력 (타임스탬프도 없음)
 out=$(env NOW_EPOCH="$T0" CLAUDE_STATUS_FILE="$DIR/none.json" CODEX_SESSIONS_DIR="$DIR/no-dir" GROK_CACHE_FILE="$DIR/no-cache.json" GROK_FETCH_CMD="false" "$SCRIPT")
@@ -52,27 +52,27 @@ out=$(env NOW_EPOCH="$T0" CLAUDE_STATUS_FILE="$DIR/none.json" CODEX_SESSIONS_DIR
 # 6) 깨진 claude JSON + garbage grok 응답 내성
 printf '{"rate_limits":{"five_h' > "$DIR/broken.json"
 out=$(env NOW_EPOCH="$T0" CLAUDE_STATUS_FILE="$DIR/broken.json" CODEX_SESSIONS_DIR="$DIR/sessions" GROK_CACHE_FILE="$DIR/no-cache2.json" GROK_FETCH_CMD="echo not-json" "$SCRIPT")
-[ "$out" = "codex ██░░░ 32% @$TS0" ] || fail "깨진 JSON: got '$out'"
+[ "$out" = "codex ███░░░░░░░ 32% │ @$TS0" ] || fail "깨진 JSON: got '$out'"
 
 # 7) 게이지 경계 하한 — 0%는 빈 게이지 (게이지는 5h 값 기준)
 cat > "$DIR/edge.json" <<'EOF'
 {"rate_limits":{"five_hour":{"used_percentage":0},"seven_day":{"used_percentage":100}}}
 EOF
 out=$(env NOW_EPOCH="$T0" CLAUDE_STATUS_FILE="$DIR/edge.json" CODEX_SESSIONS_DIR="$DIR/no-dir" GROK_CACHE_FILE="$DIR/no-cache3.json" GROK_FETCH_CMD="false" "$SCRIPT")
-[ "$out" = "claude ░░░░░ 0%/100% @$TS0" ] || fail "게이지 하한: got '$out'"
+[ "$out" = "claude ░░░░░░░░░░ 0%/100% │ @$TS0" ] || fail "게이지 하한: got '$out'"
 
 # 8) 게이지 경계 상한 — 100%는 5칸 꽉 참
 cat > "$DIR/edge-full.json" <<'EOF'
 {"rate_limits":{"five_hour":{"used_percentage":100},"seven_day":{"used_percentage":0}}}
 EOF
 out=$(env NOW_EPOCH="$T0" CLAUDE_STATUS_FILE="$DIR/edge-full.json" CODEX_SESSIONS_DIR="$DIR/no-dir" GROK_CACHE_FILE="$DIR/no-cache4.json" GROK_FETCH_CMD="false" "$SCRIPT")
-[ "$out" = "claude █████ 100%/0% @$TS0" ] || fail "게이지 상한: got '$out'"
+[ "$out" = "claude ██████████ 100%/0% │ @$TS0" ] || fail "게이지 상한: got '$out'"
 
 # 9) 손상 codex jsonl(비-UTF8 바이트) — 크래시 없이 해당 세그먼트만 생략
 mkdir -p "$DIR/bad-sessions/2026/08/26"
 printf '\xff\xfe\x00garbage' > "$DIR/bad-sessions/2026/08/26/rollout-corrupt.jsonl"
 out=$(env NOW_EPOCH="$T0" CLAUDE_STATUS_FILE="$DIR/statusline.json" CODEX_SESSIONS_DIR="$DIR/bad-sessions" GROK_CACHE_FILE="$DIR/no-cache5.json" GROK_FETCH_CMD="false" "$SCRIPT")
-[ "$out" = "claude █░░░░ 12%/30% @$TS0" ] || fail "손상 codex jsonl: got '$out'"
+[ "$out" = "claude █░░░░░░░░░ 12%/30% │ @$TS0" ] || fail "손상 codex jsonl: got '$out'"
 
 # 10) --color — 브랜드 컬러 SGR 3종 + dim 타임스탬프 + 리셋
 out=$("${base[@]}" GROK_FETCH_CMD="cat '$DIR/billing.json'" "$SCRIPT" --color)
