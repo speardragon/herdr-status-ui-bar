@@ -37,18 +37,18 @@ What `install.sh` does (idempotent; anything it touches is backed up as `*.bak-a
 
 Fetching approach credits: [CodexBar](https://github.com/steipete/CodexBar)
 
-| Agent | Source | Locality | Refresh |
+| Agent | Source | Locality | Updated when |
 |---|---|---|---|
-| Claude Code | statusline capture file | local | every render |
-| Codex | `~/.codex/sessions` rollout logs (JSONL) | local | on each session recorded |
-| Grok | CLI-proxy billing REST, one call | network | every 5 minutes (widget interval); falls back to the last successful cache on failure |
+| Claude Code | statusline capture file | local | every statusline render (live while you use Claude Code) |
+| Codex | `~/.codex/sessions` rollout logs (JSONL) | local | whenever the Codex CLI writes a session |
+| Grok | CLI-proxy billing REST, one call | network | each widget tick (5 min), cached on failure |
 
 The Grok token is never passed as a curl argument — it's sent via stdin config (`-K -`), so it never shows up in `ps`. No credential is ever written to a log or to stdout.
 
 ## Notes & limitations
 
-- The herdr tab bar does not render ANSI colors from command widgets, so output there is always plain text. `--color` exists for running the script directly in a terminal.
-- The codex segment shows `*` until you've used the Codex CLI directly, since sessions are its only data source.
+- As of herdr 0.8.x, the tab bar does not render ANSI escapes from command widgets, so output there is always plain text. `--color` exists for running the script directly in a terminal.
+- If you've never used the Codex CLI, the codex segment is simply omitted (sessions are its only data source). A `*` means your most recent Codex session is older than 24 hours — use the CLI again and it clears.
 - The claude segment requires an existing Claude Code statusline; without one it's simply omitted.
 - Exotic `config.toml` layouts (for example, brackets inside a widget's command string) aren't handled by the installer's bracket-counting parser — it detects this, makes no changes, and prints instructions for adding the widget line by hand.
 
