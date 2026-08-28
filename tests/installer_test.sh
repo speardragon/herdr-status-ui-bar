@@ -120,4 +120,27 @@ grep -c 'command = "~/.config/herdr/agent-usage/agent_usage.py"' "$HERDR_CONFIG_
 grep -q "# NOTE: agent-usage/agent_usage.py is documented here" "$HERDR_CONFIG_DIR/config.toml" || fail "무관 주석 오삭제"
 grep -q 'command = "~/.config/herdr/agent-usage/agent_usage.py"' "$HERDR_CONFIG_DIR/config.toml" && fail "위젯 라인 잔존" || true
 
-echo "PASS (8/8)"
+# 9) 옛 경로 마이그레이션 + 중복 정리 — 옛 경로(~/.config/herdr/agent_usage.py) 항목과
+#    새 경로 항목이 섞여 있어도 설치 시 정규 위젯 하나로 합쳐진다 (버전 간 경로 변경 회귀 방지)
+cat > "$HERDR_CONFIG_DIR/config.toml" <<'EOF'
+[ui]
+tab_bar_right = [
+  { type = "zoom" },
+  { type = "command", command = "~/.config/herdr/agent_usage.py", interval_seconds = 300, timeout_seconds = 5 },
+  { type = "command", command = "~/.config/herdr/agent-usage/agent_usage.py", interval_seconds = 300, timeout_seconds = 5 },
+]
+EOF
+AGENT_USAGE_SKIP_CLAUDE=1 "$REPO/install.sh" > /dev/null
+grep -c "agent_usage.py" "$HERDR_CONFIG_DIR/config.toml" | grep -qx 1 || fail "중복/옛 경로가 하나로 정리되지 않음"
+grep -q 'command = "~/.config/herdr/agent-usage/agent_usage.py"' "$HERDR_CONFIG_DIR/config.toml" || fail "정규(새 경로) 위젯으로 대체되지 않음"
+grep -q 'command = "~/.config/herdr/agent_usage.py"' "$HERDR_CONFIG_DIR/config.toml" && fail "옛 경로 항목 잔존" || true
+grep -q '{ type = "zoom" }' "$HERDR_CONFIG_DIR/config.toml" || fail "무관 위젯(zoom) 오삭제"
+python3 -c "import tomllib" 2>/dev/null && python3 -c "
+import tomllib,os
+tomllib.load(open(os.environ['HERDR_CONFIG_DIR']+'/config.toml','rb'))
+" || true
+# 재실행 멱등 — 이미 정규화됐으면 변화 없음
+AGENT_USAGE_SKIP_CLAUDE=1 "$REPO/install.sh" > /dev/null
+grep -c "agent_usage.py" "$HERDR_CONFIG_DIR/config.toml" | grep -qx 1 || fail "정규화 후 재실행이 중복을 만듦"
+
+echo "PASS (9/9)"

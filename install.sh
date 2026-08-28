@@ -37,36 +37,55 @@ if os.path.exists(path):
     with open(path) as f:
         text = f.read()
 
-# 멱등 판단은 정확한 위젯 command 문자열로만 — 경로가 주석 등에 언급돼도 오탐하지 않게.
-if widget_cmd in text:
-    print("config.toml: widget already registered — skipped")
-    sys.exit(0)
+# 이미 등록된 agent_usage.py command 위젯 라인을 전부 찾는다 — 옛 경로(~/.config/herdr/
+# agent_usage.py)와 새 경로(agent-usage/agent_usage.py)를 모두 포함. 스크립트 경로가 버전
+# 사이에 바뀌어도 중복이 쌓이지 않게 하려는 것. 주석 등 command 위젯이 아닌 언급은 건드리지 않는다.
+existing_re = re.compile(
+    r'^[ \t]*\{[^\n]*type[ \t]*=[ \t]*"command"[^\n]*agent_usage\.py[^\n]*\},?[ \t]*\n',
+    re.M,
+)
+existing = existing_re.findall(text)
 
-if os.path.exists(path):
-    shutil.copy2(path, f"{path}.bak-agent-usage-{os.environ['STAMP']}")
-
-array_match = re.search(r"tab_bar_right\s*=\s*\[", text)
-if array_match:
-    # 배열의 닫는 ']'를 대괄호 깊이로 찾는다. 문자열 내부의 대괄호는 인식하지 못하므로,
-    # 쓰기 전에 tomllib로 결과를 검증해 비정형 config에서는 무변경으로 중단한다 (아래).
-    depth, pos = 1, array_match.end()
-    while pos < len(text) and depth:
-        if text[pos] == "[":
-            depth += 1
-        elif text[pos] == "]":
-            depth -= 1
-        pos += 1
-    if depth:
-        sys.exit("error: tab_bar_right array is not closed — fix config.toml first")
-    insert_at = pos - 1
-    new_text = text[:insert_at] + widget + text[insert_at:]
-elif re.search(r"^\[ui\]\s*$", text, re.M):
-    ui_match = re.search(r"^\[ui\]\s*$", text, re.M)
-    insert_at = ui_match.end()
-    block = f"\ntab_bar_right = [\n{widget}]\n"
-    new_text = text[:insert_at] + block + text[insert_at:]
+if existing:
+    # 정확히 한 개가 새 경로로 등록돼 있으면 변경 없음 (사용자가 조정한 interval 등은 보존).
+    if len(existing) == 1 and widget_cmd in existing[0]:
+        print("config.toml: widget already registered — skipped")
+        sys.exit(0)
+    # 그 외(옛 경로·중복·비정규 형태) → 백업 후 기존 라인을 모두 제거하고 정규 위젯 하나로 대체.
+    if os.path.exists(path):
+        shutil.copy2(path, f"{path}.bak-agent-usage-{os.environ['STAMP']}")
+    seen = {"n": 0}
+    def _dedup(_m):
+        seen["n"] += 1
+        return widget if seen["n"] == 1 else ""  # 첫 항목만 정규형으로, 나머지는 삭제
+    new_text = existing_re.sub(_dedup, text)
+    msg = f"config.toml: widget registration normalized ({len(existing)} → 1)"
 else:
-    new_text = text + f"\n[ui]\ntab_bar_right = [\n{widget}]\n"
+    if os.path.exists(path):
+        shutil.copy2(path, f"{path}.bak-agent-usage-{os.environ['STAMP']}")
+    array_match = re.search(r"tab_bar_right\s*=\s*\[", text)
+    if array_match:
+        # 배열의 닫는 ']'를 대괄호 깊이로 찾는다. 문자열 내부의 대괄호는 인식하지 못하므로,
+        # 쓰기 전에 tomllib로 결과를 검증해 비정형 config에서는 무변경으로 중단한다 (아래).
+        depth, pos = 1, array_match.end()
+        while pos < len(text) and depth:
+            if text[pos] == "[":
+                depth += 1
+            elif text[pos] == "]":
+                depth -= 1
+            pos += 1
+        if depth:
+            sys.exit("error: tab_bar_right array is not closed — fix config.toml first")
+        insert_at = pos - 1
+        new_text = text[:insert_at] + widget + text[insert_at:]
+    elif re.search(r"^\[ui\]\s*$", text, re.M):
+        ui_match = re.search(r"^\[ui\]\s*$", text, re.M)
+        insert_at = ui_match.end()
+        block = f"\ntab_bar_right = [\n{widget}]\n"
+        new_text = text[:insert_at] + block + text[insert_at:]
+    else:
+        new_text = text + f"\n[ui]\ntab_bar_right = [\n{widget}]\n"
+    msg = "config.toml: widget registered"
 
 # 파일에 쓰기 전에 결과 TOML 유효성 검증 (tomllib은 3.11+ — 없으면 검증 생략).
 # 검증 실패 = 괄호 카운터가 못 다루는 비정형 config → 아무것도 쓰지 않고 수동 등록 안내.
@@ -86,7 +105,7 @@ if tomllib is not None:
 
 with open(path, "w") as f:
     f.write(new_text)
-print("config.toml: widget registered")
+print(msg)
 PY
 
 # --- Claude statusline 캡처 래퍼 (statusline이 이미 있는 유저만) ---
