@@ -15,14 +15,34 @@ Plan-usage gauges for your AI coding agents — **Claude Code, OpenAI Codex, and
 
 ## Install
 
-As a herdr plugin (herdr 0.8+):
+As a herdr plugin (herdr 0.8+) — this is **two steps**. `plugin install` only *registers* the
+plugin; it does **not** touch your config. You then run the plugin's **install action**, which is
+what actually adds the widget and (if applicable) wraps your Claude statusline:
 
 ```
+# 1. register the plugin
 herdr plugin install speardragon/herdr-status-ui-bar
-# then run the plugin's "Install agent usage tab-bar widget" action
+
+# 2. run the install action (this is the step that adds the tab-bar widget)
+herdr plugin action invoke speardragon.herdr-status-ui-bar.install
 ```
 
-Or directly:
+If the widget doesn't appear after `plugin install` alone, you almost certainly skipped step 2 —
+`plugin install` never runs actions on its own.
+
+> Note: with `herdr plugin install`, the `--yes` flag must come **after** the source
+> (`herdr plugin install speardragon/herdr-status-ui-bar --yes`). Putting `--yes`/`-y` *before*
+> the source prints a `usage:` error. Without `--yes`, an interactive terminal shows a preview of
+> the source and the commands it will run, so you can review before confirming.
+
+You can confirm the plugin registered and see its action ids with:
+
+```
+herdr plugin list
+herdr plugin action list --plugin speardragon.herdr-status-ui-bar
+```
+
+Or install directly, without the plugin system:
 
 ```
 git clone https://github.com/speardragon/herdr-status-ui-bar && cd herdr-status-ui-bar && ./install.sh
@@ -57,8 +77,22 @@ The Grok token is never passed as a curl argument — it's sent via stdin config
 
 ## Uninstall
 
+Run the uninstall action (removes the widget line and restores your original statusline):
+
 ```
-./uninstall.sh   # or the plugin's uninstall action — restores your original statusline
+herdr plugin action invoke speardragon.herdr-status-ui-bar.uninstall
+```
+
+Or, for a direct install, run the script:
+
+```
+./uninstall.sh
+```
+
+Removing the plugin registration itself is separate from the uninstall action — run it after, if you also want to unregister:
+
+```
+herdr plugin uninstall speardragon/herdr-status-ui-bar
 ```
 
 Backups (`*.bak-agent-usage-<timestamp>`) created by `install.sh` are left in place intentionally — uninstall does not delete them, so you can always recover a pre-install file by hand.
