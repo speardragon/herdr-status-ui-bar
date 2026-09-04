@@ -1,9 +1,17 @@
 id = "speardragon.herdr-status-ui-bar"
 name = "Agent Usage Bar"
-version = "0.2.1"
+version = "0.3.0"
 min_herdr_version = "0.8.0"
 description = "AI agent plan-usage gauges (Claude Code / Codex / Grok) in the herdr tab bar"
 platforms = ["macos", "linux"]
+
+[[panes]]
+id = "customize"
+title = "Agent Usage Bar: Customize"
+placement = "popup"
+width = "80%"
+height = "50%"
+command = ["python3", "customize.py"]
 
 [[actions]]
 id = "install"
@@ -14,3 +22,15 @@ command = ["./install.sh"]
 id = "uninstall"
 title = "Uninstall agent usage tab-bar widget"
 command = ["./uninstall.sh"]
+
+[[actions]]
+id = "customize"
+title = "Agent Usage Bar: Customize tab bar layout"
+contexts = ["global", "workspace", "pane"]
+command = ["herdr", "plugin", "pane", "open", "--plugin", "speardragon.herdr-status-ui-bar", "--entrypoint", "customize", "--placement", "popup", "--focus"]
+
+[[actions]]
+id = "reset"
+title = "Agent Usage Bar: Clear all tab-bar widgets"
+contexts = ["global", "workspace"]
+command = ["python3", "reset.py"]

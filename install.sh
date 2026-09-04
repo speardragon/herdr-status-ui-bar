@@ -1,7 +1,9 @@
 #!/bin/sh
 # herdr-status-ui-bar installer
-# 설치 내용: ① 위젯 스크립트 → ~/.config/herdr/agent-usage/ ② config.toml tab_bar_right에 위젯 등록(멱등)
-#           ③ Claude Code statusline 래핑(있을 때만, 사이드카 방식) ④ herdr reload
+# 설치 내용: ① 위젯 스크립트 → ~/.config/herdr/agent-usage/ ② layout.toml을 만들거나
+#           불러와 config.toml의 [ui].tab_bar_right 전체를 재생성(멱등, 기존 항목은
+#           블록으로 승격하거나 custom으로 보존) ③ Claude Code statusline 래핑(있을 때만,
+#           사이드카 방식) ④ herdr reload
 # 오버라이드: HERDR_CONFIG_DIR, CLAUDE_SETTINGS, AGENT_USAGE_SKIP_CLAUDE=1
 set -eu
 
@@ -21,91 +23,49 @@ command -v curl >/dev/null 2>&1 || err "curl not found (needed for the grok segm
 
 mkdir -p "$DEST_DIR"
 cp "$SRC_DIR/agent_usage.py" "$DEST_DIR/agent_usage.py"
-chmod +x "$DEST_DIR/agent_usage.py"
+cp "$SRC_DIR/tab_id.py" "$DEST_DIR/tab_id.py"
+chmod +x "$DEST_DIR/agent_usage.py" "$DEST_DIR/tab_id.py"
 note "installed: $DEST_DIR/agent_usage.py"
+note "installed: $DEST_DIR/tab_id.py"
 
-# --- config.toml에 위젯 등록 (멱등, 괄호 카운터로 배열 끝 위치 탐색) ---
-CONFIG_TOML="$CONFIG_DIR/config.toml" STAMP="$STAMP" python3 - <<'PY'
-import os, re, shutil, sys
+# --- layout.toml을 만들거나 불러오고, config.toml의 tab_bar_right 전체를 그로부터 다시 쓴다 ---
+# layout.toml이 없으면(첫 설치) 기존 tab_bar_right 항목을 블록으로 승격 시도한다 — 정확히
+# 일치하는 것만 카탈로그 블록으로, 나머지는 원문을 보존하는 custom 블록으로. 이후로는 이
+# layout.toml이 진실의 원천이라 tab_bar_right는 항상 여기서 통째로 재생성된다.
+CONFIG_TOML="$CONFIG_DIR/config.toml" SRC_DIR="$SRC_DIR" DEST_DIR="$DEST_DIR" python3 - <<'PY'
+import os, sys
+from pathlib import Path
 
-path = os.environ["CONFIG_TOML"]
-widget_cmd = 'command = "~/.config/herdr/agent-usage/agent_usage.py"'
-widget = f'  {{ type = "command", {widget_cmd}, interval_seconds = 300, timeout_seconds = 5 }},\n'
+sys.path.insert(0, os.environ["SRC_DIR"])
+import layout as L
+import render_config as R
 
-text = ""
-if os.path.exists(path):
-    with open(path) as f:
-        text = f.read()
+config_path = Path(os.environ["CONFIG_TOML"])
+layout_path = Path(os.environ["DEST_DIR"]) / "layout.toml"
+text = config_path.read_text() if config_path.exists() else ""
 
-# 이미 등록된 agent_usage.py command 위젯 라인을 전부 찾는다 — 옛 경로(~/.config/herdr/
-# agent_usage.py)와 새 경로(agent-usage/agent_usage.py)를 모두 포함. 스크립트 경로가 버전
-# 사이에 바뀌어도 중복이 쌓이지 않게 하려는 것. 주석 등 command 위젯이 아닌 언급은 건드리지 않는다.
-existing_re = re.compile(
-    r'^[ \t]*\{[^\n]*type[ \t]*=[ \t]*"command"[^\n]*agent_usage\.py[^\n]*\},?[ \t]*\n',
-    re.M,
-)
-existing = existing_re.findall(text)
-
-if existing:
-    # 정확히 한 개가 새 경로로 등록돼 있으면 변경 없음 (사용자가 조정한 interval 등은 보존).
-    if len(existing) == 1 and widget_cmd in existing[0]:
-        print("config.toml: widget already registered — skipped")
-        sys.exit(0)
-    # 그 외(옛 경로·중복·비정규 형태) → 백업 후 기존 라인을 모두 제거하고 정규 위젯 하나로 대체.
-    if os.path.exists(path):
-        shutil.copy2(path, f"{path}.bak-agent-usage-{os.environ['STAMP']}")
-    seen = {"n": 0}
-    def _dedup(_m):
-        seen["n"] += 1
-        return widget if seen["n"] == 1 else ""  # 첫 항목만 정규형으로, 나머지는 삭제
-    new_text = existing_re.sub(_dedup, text)
-    msg = f"config.toml: widget registration normalized ({len(existing)} → 1)"
+if layout_path.exists():
+    blocks = L.load(layout_path)
+    if not any(b["id"] == "agent-status" for b in blocks):
+        blocks.append({"id": "agent-status", "enabled": True})
+        print("layout: added agent-status widget")
 else:
-    if os.path.exists(path):
-        shutil.copy2(path, f"{path}.bak-agent-usage-{os.environ['STAMP']}")
-    array_match = re.search(r"tab_bar_right\s*=\s*\[", text)
-    if array_match:
-        # 배열의 닫는 ']'를 대괄호 깊이로 찾는다. 문자열 내부의 대괄호는 인식하지 못하므로,
-        # 쓰기 전에 tomllib로 결과를 검증해 비정형 config에서는 무변경으로 중단한다 (아래).
-        depth, pos = 1, array_match.end()
-        while pos < len(text) and depth:
-            if text[pos] == "[":
-                depth += 1
-            elif text[pos] == "]":
-                depth -= 1
-            pos += 1
-        if depth:
-            sys.exit("error: tab_bar_right array is not closed — fix config.toml first")
-        insert_at = pos - 1
-        new_text = text[:insert_at] + widget + text[insert_at:]
-    elif re.search(r"^\[ui\]\s*$", text, re.M):
-        ui_match = re.search(r"^\[ui\]\s*$", text, re.M)
-        insert_at = ui_match.end()
-        block = f"\ntab_bar_right = [\n{widget}]\n"
-        new_text = text[:insert_at] + block + text[insert_at:]
-    else:
-        new_text = text + f"\n[ui]\ntab_bar_right = [\n{widget}]\n"
-    msg = "config.toml: widget registered"
+    span = R.find_array_span(text)
+    raw_entries = L.split_array_entries(text[span[1]:span[2]]) if span else []
+    parsed_entries = [(raw, L.parse_inline_table(raw)) for raw in raw_entries]
+    blocks, notes = L.build_initial_layout(parsed_entries)
+    for note_text in notes:
+        print(f"layout: {note_text}")
 
-# 파일에 쓰기 전에 결과 TOML 유효성 검증 (tomllib은 3.11+ — 없으면 검증 생략).
-# 검증 실패 = 괄호 카운터가 못 다루는 비정형 config → 아무것도 쓰지 않고 수동 등록 안내.
+# config.toml에 먼저 반영해보고, 성공했을 때만 layout.toml을 남긴다 — 실패 시 아무 흔적도
+# 남기지 않는다(기존 install.sh의 all-or-nothing 보장을 그대로 유지).
 try:
-    import tomllib
-except ImportError:
-    tomllib = None
-if tomllib is not None:
-    try:
-        tomllib.loads(new_text)
-    except tomllib.TOMLDecodeError as exc:
-        sys.exit(
-            "error: could not add the widget automatically (unusual config.toml layout: "
-            f"{exc}).\nYour config.toml was left unchanged. Add this line to [ui].tab_bar_right manually:\n"
-            f"{widget.rstrip()}"
-        )
-
-with open(path, "w") as f:
-    f.write(new_text)
-print(msg)
+    message = R.regenerate(config_path, blocks)
+except R.RenderError as exc:
+    sys.exit(f"error: {exc}")
+L.save(layout_path, blocks)
+print(f"layout: saved {layout_path}")
+print(message)
 PY
 
 # --- Claude statusline 캡처 래퍼 (statusline이 이미 있는 유저만) ---

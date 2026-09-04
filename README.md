@@ -1,6 +1,8 @@
 # herdr-status-ui-bar
 
-Plan-usage gauges for your AI coding agents — **Claude Code, OpenAI Codex, and Grok CLI** — rendered in the [herdr](https://herdr.dev) tab bar.
+Plan-usage gauges for your AI coding agents — **Claude Code, OpenAI Codex, and Grok CLI** — rendered in the [herdr](https://herdr.dev) tab bar, plus a popup to customize the whole tab bar's layout.
+
+![herdr tab bar with the focused pane id, weather, and the claude / codex / grok usage gauges](docs/tab-bar.png)
 
 ```
 ⛅ +29°C · claude ████░░░░░░ 39%/40% │ codex ███░░░░░░░ 32%* │ grok █░░░░░░░░░ 8% │ @13:04
@@ -52,9 +54,49 @@ To skip wrapping your Claude Code statusline (widget still runs, just without th
 
 What `install.sh` does (idempotent; anything it touches is backed up as `*.bak-agent-usage-<timestamp>`):
 
-1. copies the widget script to `~/.config/herdr/agent-usage/`
-2. registers one command widget in `[ui].tab_bar_right` of your herdr `config.toml`
+1. copies the widget scripts to `~/.config/herdr/agent-usage/`
+2. builds (or updates) `~/.config/herdr/agent-usage/layout.toml` — see [Customize the tab bar](#customize-the-tab-bar) — and regenerates `[ui].tab_bar_right` in your herdr `config.toml` from it
 3. if you have a Claude Code statusline, wraps it to capture rate-limit data — your original command is preserved as a sidecar and still renders exactly as before
+
+## Customize the tab bar
+
+This plugin owns `[ui].tab_bar_right` entirely — it's always regenerated from
+`~/.config/herdr/agent-usage/layout.toml`, in order. Three blocks come built in:
+
+| Block | Shows | Options |
+|---|---|---|
+| `agent-status` | the gauges described above | — |
+| `weather` | `curl`'d from [wttr.in](https://wttr.in) | `city` (default `Seoul`) |
+| `herdr-tab-id` | the focused pane id (`herdr api snapshot`, parsed in Python — no `jq`) | — |
+
+Open the popup editor:
+
+```
+herdr plugin action invoke speardragon.herdr-status-ui-bar.customize
+```
+
+![The customize popup: a checklist of blocks with the cursor on Weather, key hints at the top, and a live preview of the resulting tab bar at the bottom](docs/customize-popup.png)
+
+In the popup: `↑/↓` or `k/j` to move, `Space` to toggle a block on/off, `K`/`J`
+(shift+k / shift+j) to reorder, `R` (shift+r) to turn everything off, `Enter` to
+apply (rewrites `config.toml` and reloads herdr), `Esc`/`q` to cancel without
+changing anything. A live preview line at the bottom runs each enabled block's
+actual command so you can see the result before committing.
+
+To clear the tab bar without opening the popup:
+
+```
+herdr plugin action invoke speardragon.herdr-status-ui-bar.reset
+```
+
+This only flips every block to disabled in `layout.toml` — reopen the popup to turn any of them back on.
+
+On first install, any widgets already in your `tab_bar_right` are carried over: entries that
+exactly match one of the built-in blocks (weather commands may differ only by city) are promoted
+to that block; everything else — `zoom`, a custom script, a hand-written command — is kept as-is
+in a `custom` block so nothing you had is lost, just reordered/toggled through the same popup.
+Options beyond `city` and `interval_seconds`/`timeout_seconds` per block aren't exposed in the
+popup yet — edit `layout.toml` by hand for those.
 
 ## Data sources
 
@@ -77,7 +119,11 @@ The Grok token is never passed as a curl argument — it's sent via stdin config
 
 ## Uninstall
 
-Run the uninstall action (removes the widget line and restores your original statusline):
+Run the uninstall action (removes the `agent-status` widget and restores your original statusline).
+Any other blocks you arranged with the `customize` popup — `weather`, `herdr-tab-id`, or carried-over
+`custom` ones — are left in place and in the order you set, since those aren't this plugin's to remove.
+If `herdr-tab-id` is still enabled, `tab_id.py` and `layout.toml` are kept so it keeps working; otherwise
+`~/.config/herdr/agent-usage/` is removed entirely:
 
 ```
 herdr plugin action invoke speardragon.herdr-status-ui-bar.uninstall
