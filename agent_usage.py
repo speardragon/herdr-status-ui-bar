@@ -234,6 +234,7 @@ def grok_segment() -> str | None:
 
 def main() -> None:
     color = "--color" in sys.argv[1:]
+    hour12 = "--12h" in sys.argv[1:]
     named = [
         ("claude", claude_segment()),
         ("codex", codex_segment()),
@@ -241,7 +242,10 @@ def main() -> None:
     ]
     parts = [colorize(name, text) if color else text for name, text in named if text]
     if parts:
-        stamp = datetime.fromtimestamp(now()).strftime("%H:%M")
+        fmt = "%I:%M%p" if hour12 else "%H:%M"
+        stamp = datetime.fromtimestamp(now()).strftime(fmt)
+        if hour12:
+            stamp = stamp.lstrip("0").lower()
         parts.append(f"\x1b[2m@{stamp}\x1b[0m" if color else f"@{stamp}")
     print(" │ ".join(parts))
 

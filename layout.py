@@ -23,7 +23,11 @@ CATALOG = {
         "label": "Agent status (claude / codex / grok)",
         "default_interval": 300,
         "default_timeout": 5,
-        "command": lambda block: "~/.config/herdr/agent-usage/agent_usage.py",
+        "command": lambda block: (
+            "~/.config/herdr/agent-usage/agent_usage.py --12h"
+            if block.get("hour12")
+            else "~/.config/herdr/agent-usage/agent_usage.py"
+        ),
     },
     "weather": {
         "label": "Weather",
@@ -108,8 +112,14 @@ def match_entry(entry) -> tuple[str, dict] | None:
         _carry_overrides(opts, entry, CATALOG["herdr-tab-id"])
         return ("herdr-tab-id", opts)
 
-    if cmd in (_LEGACY_AGENT_STATUS_COMMAND, CATALOG["agent-status"]["command"]({})):
+    if cmd in (
+        _LEGACY_AGENT_STATUS_COMMAND,
+        CATALOG["agent-status"]["command"]({}),
+        CATALOG["agent-status"]["command"]({"hour12": True}),
+    ):
         opts = {}
+        if cmd == CATALOG["agent-status"]["command"]({"hour12": True}):
+            opts["hour12"] = True
         _carry_overrides(opts, entry, CATALOG["agent-status"])
         return ("agent-status", opts)
 
@@ -122,7 +132,11 @@ def is_managed_strict(cmd: str) -> bool:
         return True
     if cmd in (_LEGACY_TAB_ID_COMMAND, CATALOG["herdr-tab-id"]["command"]({})):
         return True
-    if cmd in (_LEGACY_AGENT_STATUS_COMMAND, CATALOG["agent-status"]["command"]({})):
+    if cmd in (
+        _LEGACY_AGENT_STATUS_COMMAND,
+        CATALOG["agent-status"]["command"]({}),
+        CATALOG["agent-status"]["command"]({"hour12": True}),
+    ):
         return True
     return False
 
@@ -292,6 +306,8 @@ def dump(blocks: list[dict]) -> str:
         lines.append(f'enabled = {"true" if block.get("enabled", True) else "false"}')
         if block["id"] == "weather" and block.get("city"):
             lines.append(f'city = {_toml_quote(block["city"])}')
+        if block["id"] == "agent-status" and block.get("hour12"):
+            lines.append("hour12 = true")
         if "interval_seconds" in block:
             lines.append(f'interval_seconds = {int(block["interval_seconds"])}')
         if "timeout_seconds" in block:

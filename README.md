@@ -66,7 +66,7 @@ order:
 
 | Widget | Shows | Options |
 |---|---|---|
-| `agent-status` | the gauges described above | — |
+| `agent-status` | the gauges described above | `hour12` (default off, 24h clock) |
 | `weather` | `curl`'d from [wttr.in](https://wttr.in) | `city` (default `Seoul`) |
 | `herdr-tab-id` | the focused pane id (`herdr api snapshot`, parsed in Python — no `jq`) | — |
 
@@ -101,7 +101,7 @@ reopen the popup to turn any of them back on.
 
 On first install, the plugin detects which of the three widgets you already have
 and starts them enabled (`agent-status` is on by default); the rest are off but
-still listed in the popup. Options beyond `city` and per-widget
+still listed in the popup. Options beyond `city`, `hour12`, and per-widget
 `interval_seconds`/`timeout_seconds` aren't in the popup yet — edit `layout.toml`
 by hand for those.
 

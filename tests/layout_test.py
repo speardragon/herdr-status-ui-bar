@@ -61,6 +61,14 @@ class MatchEntryTests(unittest.TestCase):
         entry = L.parse_inline_table('{ type = "command", command = "~/.config/herdr/agent_usage.py" }')
         self.assertEqual(L.match_entry(entry)[0], "agent-status")
 
+    def test_agent_status_hour12(self):
+        entry = L.parse_inline_table(
+            '{ type = "command", command = "~/.config/herdr/agent-usage/agent_usage.py --12h" }'
+        )
+        bid, opts = L.match_entry(entry)
+        self.assertEqual(bid, "agent-status")
+        self.assertTrue(opts["hour12"])
+
     def test_zoom_is_not_matched(self):
         self.assertIsNone(L.match_entry({"type": "zoom"}))
 
@@ -70,6 +78,9 @@ class ManagedCommandTests(unittest.TestCase):
         self.assertTrue(L.is_managed_strict("~/.config/herdr/agent-usage/agent_usage.py"))
         self.assertTrue(L.is_managed_strict("~/.config/herdr/agent-usage/tab_id.py"))
         self.assertTrue(L.is_managed_strict("~/.config/herdr/agent_usage.py"))
+        self.assertTrue(
+            L.is_managed_strict("~/.config/herdr/agent-usage/agent_usage.py --12h")
+        )
         self.assertTrue(
             L.is_managed_strict("curl -s --max-time 2 'wttr.in/Seoul?format=%c+%t' 2>/dev/null")
         )
@@ -148,7 +159,7 @@ class DumpLoadRoundTripTests(unittest.TestCase):
         blocks = L.canonical_layout([
             {"id": "weather", "enabled": True, "city": "Busan", "interval_seconds": 120},
             {"id": "herdr-tab-id", "enabled": False},
-            {"id": "agent-status", "enabled": True},
+            {"id": "agent-status", "enabled": True, "hour12": True},
         ])
         self.assertEqual(L._parse(L.dump(blocks)) and L.canonical_layout(L._parse(L.dump(blocks))), blocks)
 
@@ -179,6 +190,12 @@ class WidgetTomlTests(unittest.TestCase):
 
     def test_weather_city_override(self):
         self.assertIn("wttr.in/Busan", L.widget_toml({"id": "weather", "city": "Busan"}))
+
+    def test_agent_status_hour12_override(self):
+        self.assertIn(
+            "agent_usage.py --12h",
+            L.widget_toml({"id": "agent-status", "hour12": True}),
+        )
 
     def test_tab_id_has_no_jq(self):
         self.assertNotIn("jq", L.widget_toml({"id": "herdr-tab-id"}))
