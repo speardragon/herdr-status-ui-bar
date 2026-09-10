@@ -118,6 +118,17 @@ def run(stdscr, blocks: list[dict]) -> list[dict] | None:
 def main() -> int:
     layout_path = dest_dir() / "layout.toml"
     config_path = config_dir() / "config.toml"
+
+    if not (dest_dir() / "agent_usage.py").exists():
+        print(
+            "customize: run the install action first "
+            "(herdr plugin action invoke speardragon.herdr-status-ui-bar.install) — "
+            "the widget scripts aren't installed yet, so enabling anything here "
+            "would point the tab bar at files that don't exist.",
+            file=sys.stderr,
+        )
+        return 1
+
     blocks = L.load(layout_path)
 
     result = curses.wrapper(run, blocks)
