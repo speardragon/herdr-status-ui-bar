@@ -6,8 +6,8 @@ SCRIPT="$(cd "$(dirname "$0")/.." && pwd)/agent_usage.py"
 DIR="$(mktemp -d)"
 trap 'rm -rf "$DIR"' EXIT
 fail() { echo "FAIL: $1"; exit 1; }
-mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1"; }
-fmt_hm() { date -r "$1" +%H:%M 2>/dev/null || date -d "@$1" +%H:%M; }
+mtime() { python3 -c 'import os, sys; print(int(os.stat(sys.argv[1]).st_mtime))' "$1"; }
+fmt_hm() { python3 -c 'import datetime, sys; print(datetime.datetime.fromtimestamp(int(sys.argv[1])).strftime("%H:%M"))' "$1"; }
 
 # 픽스처 — 실물과 동일한 필드 구조
 cat > "$DIR/statusline.json" <<'EOF'
