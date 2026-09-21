@@ -92,41 +92,62 @@ def render_preview_line(blocks: list[dict], outputs: dict[int, dict]) -> str:
 PROVIDER_ROWS = [(name, label, default) for name, label, default in L.PROVIDER_FIELDS] + [
     ("gauge", "Show gauge bar", True),
 ]
+_PROVIDER_KEYS = {name for name, _, _ in L.PROVIDER_FIELDS}
+MAX_ENABLED_PROVIDERS = 3  # tab-bar width guard — wide enough gauges + more than 3 segments overflow
+
+
+def _enabled_provider_count(block: dict) -> int:
+    return sum(1 for name, _, default in L.PROVIDER_FIELDS if block.get(name, default))
 
 
 def run_provider_picker(stdscr, block: dict) -> None:
     """agent-status 행에서 열리는 서브 화면 — provider·게이지 표시를 개별 토글한다.
 
     block을 제자리에서 변형한다(뮤테이션). 호출부가 돌아온 뒤 해당 블록의 미리보기를
-    다시 가져와야 한다 — 여기서는 커맨드를 실행하지 않는다.
+    다시 가져와야 한다 — 여기서는 커맨드를 실행하지 않는다. provider는 동시에
+    MAX_ENABLED_PROVIDERS개까지만 켤 수 있다 — 탭 바 폭을 넘겨 잘리는 걸 막기 위함
+    (게이지 자체는 이 제한에 포함되지 않는다).
     """
     cursor = 0
+    warning = ""
     while True:
         stdscr.erase()
         height, width = stdscr.getmaxyx()
         x = PAD_X
         usable_width = max(1, width - 2 * PAD_X)
         stdscr.addstr(PAD_Y, x, "Agent status — providers"[:usable_width], curses.A_BOLD)
-        stdscr.addstr(PAD_Y + 1, x, "[↑/↓] move  [Space] toggle  [Enter/Esc] back"[:usable_width])
+        stdscr.addstr(
+            PAD_Y + 1, x,
+            f"[↑/↓] move  [Space] toggle (max {MAX_ENABLED_PROVIDERS} providers)  [Enter/Esc] back"[:usable_width],
+        )
         list_top = PAD_Y + 3
         for i, (key, label, default) in enumerate(PROVIDER_ROWS):
             row = list_top + i
-            if row >= height - PAD_Y:
+            if row >= height - PAD_Y - 1:
                 break
             mark = "x" if block.get(key, default) else " "
             line = f"[{mark}] {label}"[:usable_width]
             attr = curses.A_REVERSE if i == cursor else curses.A_NORMAL
             stdscr.addstr(row, x, line, attr)
+        if warning:
+            stdscr.addstr(height - PAD_Y - 1, x, warning[:usable_width], curses.A_DIM)
         stdscr.refresh()
 
         key_in = stdscr.getch()
         if key_in in (curses.KEY_UP, ord("k")):
             cursor = (cursor - 1) % len(PROVIDER_ROWS)
+            warning = ""
         elif key_in in (curses.KEY_DOWN, ord("j")):
             cursor = (cursor + 1) % len(PROVIDER_ROWS)
+            warning = ""
         elif key_in == ord(" "):
             pkey, _, default = PROVIDER_ROWS[cursor]
-            block[pkey] = not block.get(pkey, default)
+            turning_on = not block.get(pkey, default)
+            if turning_on and pkey in _PROVIDER_KEYS and _enabled_provider_count(block) >= MAX_ENABLED_PROVIDERS:
+                warning = f"max {MAX_ENABLED_PROVIDERS} providers — turn one off first"
+            else:
+                block[pkey] = turning_on
+                warning = ""
         elif key_in in (curses.KEY_ENTER, 10, 13, 27, ord("q"), curses.KEY_LEFT):
             return
 

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """herdr 탭 바 위젯: AI 에이전트 플랜 한도 사용률 (자체 구현, 무설치).
 
-출력 예: "claude ██░░░ 12%/30% │ codex ██░░░ 32% │ grok █░░░░ 8% │ @12:48"
-        (claude 5h/7d · codex 30일 · grok 크레딧 — 게이지 5칸(기본) = 사용률, │ = 세그먼트 구분선, @HH:MM = 데이터 읽은 시각)
+출력 예: "claude ██░░░░ 12%/30% │ codex ██░░░░ 32% │ grok █░░░░░ 8% │ @12:48"
+        (claude 5h/7d · codex 30일 · grok 크레딧 — 게이지 6칸(기본) = 사용률, │ = 세그먼트 구분선, @HH:MM = 데이터 읽은 시각)
         --color 플래그 시 세그먼트별 브랜드 컬러(truecolor SGR) + dim 타임스탬프.
-        --no-gauge: 게이지 바 자체를 생략(퍼센트 텍스트만). --gauge-width N: 게이지 칸 수 변경(기본 5).
+        --no-gauge: 게이지 바 자체를 생략(퍼센트 텍스트만). --gauge-width N: 게이지 칸 수 변경(기본 6).
 - claude: statusline 캡처 파일(~/.claude/.last-statusline.json) — 로컬
 - codex:  ~/.codex/sessions/**/*.jsonl 마지막 rate_limits — 로컬
 - grok:   CLI-proxy billing REST 1콜(curl --max-time 2), 실패 시 마지막 성공 캐시
@@ -57,7 +57,8 @@ def pct(value) -> str | None:
     return None
 
 
-GAUGE_CELLS = 5  # --gauge-width overrides this; kept short by default to save tab-bar width
+GAUGE_CELLS = 6  # --gauge-width overrides this; the customize popup caps providers at 3
+                 # at a time, so this stays readable without a narrow tab bar getting cut
 SHOW_GAUGE = True  # --no-gauge disables the bar entirely (percent text only)
 
 

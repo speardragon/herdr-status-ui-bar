@@ -5,16 +5,16 @@ Plan-usage gauges for your AI coding agents — **Claude Code, OpenAI Codex, and
 ![herdr tab bar with the focused pane id, weather, and the claude / codex / grok usage gauges](docs/tab-bar.png)
 
 ```
-⛅ +29°C · claude ██░░░ 39%/40% │ codex ██░░░ 32%* │ grok █░░░░ 8% │ @13:04
+⛅ +29°C · claude ██░░░░ 39%/40% │ codex ██░░░░ 32%* │ grok █░░░░░ 8% │ @13:04
 ```
 
 - `claude 5h%/7d%` — Claude Code rate-limit windows, captured passively from your statusline (no network, no credentials)
 - `codex 30d%` — read locally from `~/.codex/sessions` rollout logs
 - `grok credit%` — one lightweight call to the Grok CLI billing API, cached with graceful fallback
-- gauge = 5 cells by default (20% each); ` │ ` separates each agent segment (also before the timestamp)
+- gauge = 6 cells by default (~17% each); ` │ ` separates each agent segment (also before the timestamp)
 - `@HH:MM` — when the data was read (the widget refreshes every 5 minutes) · `*` — the source data is stale
 - Segments for agents you don't use are silently omitted. The base widget needs only python3 (3.9+) and curl; optional Droid/Antigravity segments use [CodexBar](https://github.com/steipete/CodexBar) when enabled.
-- Tight on tab-bar width? Pick only the agents you want (see **Provider picker** below), or shrink/hide the gauge bar with `gauge_width` / `gauge = false`.
+- The customize popup's provider picker (below) caps you at 3 enabled providers at a time, so the gauge can stay wide enough to actually read without the tab bar getting cut off. Tune further with `gauge_width` / `gauge = false` if your tab bar is still narrow.
 
 ## Install
 
@@ -113,15 +113,17 @@ by hand for those.
 With the cursor on the `agent-status` row, press `→` to open a sub-screen that
 toggles each provider (`claude`/`codex`/`grok`/`droid`/`antigravity`) and the
 gauge bar itself, individually — `Space` to toggle, `Enter`/`Esc`/`←` to go back.
-This is the easiest way to trim the tab-bar width down to only the agents you
-actually watch. The row's own label lists whichever providers are currently on,
-e.g. `Agent status (claude / grok)`.
+Only 3 providers can be enabled at once (trying a 4th shows a reminder instead
+of toggling it) — that's the tradeoff that lets the gauge bar default to a wide,
+actually-readable width without overflowing the tab bar. The row's own label
+lists whichever providers are currently on, e.g. `Agent status (claude / grok)`.
 
 The same options live directly in `layout.toml` on the `agent-status` block if
-you'd rather edit by hand. Omitted native providers (`claude`, `codex`, `grok`)
+you'd rather edit by hand (the 3-provider cap is only enforced by the popup, not
+by `agent_usage.py` itself). Omitted native providers (`claude`, `codex`, `grok`)
 default to enabled for backwards compatibility; omitted CodexBar providers
 (`droid`, `antigravity`) default to disabled; `gauge` defaults to enabled and
-`gauge_width` defaults to 5 cells when unset:
+`gauge_width` defaults to 6 cells when unset:
 
 ```toml
 [[blocks]]
