@@ -9,6 +9,13 @@ fail() { echo "FAIL: $1"; exit 1; }
 mtime() { python3 -c 'import os, sys; print(int(os.stat(sys.argv[1]).st_mtime))' "$1"; }
 fmt_hm() { python3 -c 'import datetime, sys; print(datetime.datetime.fromtimestamp(int(sys.argv[1])).strftime("%H:%M"))' "$1"; }
 fmt_i12() { python3 -c 'import datetime, sys; print(datetime.datetime.fromtimestamp(int(sys.argv[1])).strftime("%I:%M%p").lstrip("0").lower())' "$1"; }
+# droid/antigravity refresh in a detached background worker (never block the widget
+# tick) — these poll for that worker's on-disk side effect instead of sleeping blind.
+wait_for_file() {
+  local tries=0
+  while [ ! -f "$1" ] && [ "$tries" -lt 50 ]; do sleep 0.1; tries=$((tries + 1)); done
+  [ -f "$1" ]
+}
 
 # 픽스처 — 실물과 동일한 필드 구조
 cat > "$DIR/statusline.json" <<'EOF'
@@ -32,6 +39,8 @@ while [ "$#" -gt 0 ]; do
     shift
   fi
 done
+[ -n "${CODEXBAR_CALL_LOG:-}" ] && echo x >> "$CODEXBAR_CALL_LOG"
+[ -n "${CODEXBAR_SLEEP:-}" ] && sleep "$CODEXBAR_SLEEP"
 [ "${CODEXBAR_MODE:-}" = "fail" ] && exit 1
 if [ "$provider" = "factory" ]; then
   printf '%s\n' '[{"provider":"factory","source":"api","usage":{"primary":{"usedPercent":30.0,"windowMinutes":10080},"secondary":{"usedPercent":12.4,"windowMinutes":300}}}]'
@@ -61,64 +70,97 @@ out=$("${base[@]}" GROK_FETCH_CMD="cat '$DIR/billing.json'" "$SCRIPT")
 [ -f "$DIR/grok_cache.json" ] || fail "grok 캐시 미생성"
 grep -q creditUsagePercent "$DIR/grok_cache.json" || fail "grok 캐시 내용 이상"
 
-# 3) optional CodexBar providers — factory is displayed as droid
-out=$("${base[@]}" GROK_FETCH_CMD="false" "$SCRIPT" --droid --antigravity)
-[ "$out" = "claude █░░░░░░░░░ 12%/30% │ codex ███░░░░░░░ 32% │ grok █░░░░░░░░░ 5% │ droid █░░░░░░░░░ 12%/30% │ antigravity █░░░░░░░░░ 6%/38% │ @$TS0" ] || fail "CodexBar providers: got '$out'"
-[ -f "$DIR/codexbar-cache/codexbar_droid_usage.json" ] || fail "droid CodexBar cache missing"
-[ -f "$DIR/codexbar-cache/codexbar_antigravity_usage.json" ] || fail "antigravity CodexBar cache missing"
+# 3) CodexBar cold start — no cache yet, so the segment is omitted (never block
+#    the tick on the slow CodexBar call); a detached background worker populates
+#    the cache for the *next* tick.
+CB_WARM="$DIR/codexbar-cache-warm"
+out=$(env NOW_EPOCH="$T0" CLAUDE_STATUS_FILE="$DIR/statusline.json" CODEX_SESSIONS_DIR="$DIR/sessions" GROK_CACHE_FILE="$DIR/no-cache-cold.json" GROK_FETCH_CMD="false" CODEXBAR_BIN="$DIR/codexbar" CODEXBAR_CACHE_DIR="$CB_WARM" "$SCRIPT" --droid --antigravity)
+[ "$out" = "claude █░░░░░░░░░ 12%/30% │ codex ███░░░░░░░ 32% │ @$TS0" ] || fail "CodexBar cold start (no cache yet): got '$out'"
+wait_for_file "$CB_WARM/codexbar_droid_usage.json" || fail "droid cache never appeared (background worker)"
+wait_for_file "$CB_WARM/codexbar_antigravity_usage.json" || fail "antigravity cache never appeared (background worker)"
 
-# 4) CodexBar fetch failure → cached provider values
-out=$("${base[@]}" CODEXBAR_MODE=fail GROK_FETCH_CMD="false" "$SCRIPT" --droid --antigravity)
-[ "$out" = "claude █░░░░░░░░░ 12%/30% │ codex ███░░░░░░░ 32% │ grok █░░░░░░░░░ 5% │ droid █░░░░░░░░░ 12%/30% │ antigravity █░░░░░░░░░ 6%/38% │ @$TS0" ] || fail "CodexBar cache fallback: got '$out'"
+# 4) CodexBar warm cache — next tick reads the now-populated cache synchronously,
+#    factory is displayed as droid.
+out=$(env NOW_EPOCH="$T0" CLAUDE_STATUS_FILE="$DIR/statusline.json" CODEX_SESSIONS_DIR="$DIR/sessions" GROK_CACHE_FILE="$DIR/no-cache-warm.json" GROK_FETCH_CMD="false" CODEXBAR_BIN="$DIR/codexbar" CODEXBAR_CACHE_DIR="$CB_WARM" "$SCRIPT" --droid --antigravity)
+[ "$out" = "claude █░░░░░░░░░ 12%/30% │ codex ███░░░░░░░ 32% │ droid █░░░░░░░░░ 12%/30% │ antigravity █░░░░░░░░░ 6%/38% │ @$TS0" ] || fail "CodexBar warm cache read: got '$out'"
 
-# 5) offline Antigravity data is not rendered as a fake 0%
-out=$(env NOW_EPOCH="$T0" CLAUDE_STATUS_FILE="$DIR/statusline.json" CODEX_SESSIONS_DIR="$DIR/sessions" GROK_CACHE_FILE="$DIR/no-cache-offline.json" CODEXBAR_BIN="$DIR/codexbar" CODEXBAR_CACHE_DIR="$DIR/offline-cache" CODEXBAR_MODE=offline GROK_FETCH_CMD="false" "$SCRIPT" --antigravity)
-[ "$out" = "claude █░░░░░░░░░ 12%/30% │ codex ███░░░░░░░ 32% │ @$TS0" ] || fail "offline Antigravity: got '$out'"
+# 5) CodexBar fetch failure → last known-good cache is kept, never overwritten
+CB_FAIL="$DIR/codexbar-cache-fail"
+env NOW_EPOCH="$T0" CLAUDE_STATUS_FILE="$DIR/none.json" CODEX_SESSIONS_DIR="$DIR/no-dir" GROK_CACHE_FILE="$DIR/no-cache-fail-seed.json" GROK_FETCH_CMD="false" CODEXBAR_BIN="$DIR/codexbar" CODEXBAR_CACHE_DIR="$CB_FAIL" "$SCRIPT" --antigravity >/dev/null
+wait_for_file "$CB_FAIL/codexbar_antigravity_usage.json" || fail "fetch-failure test: seed cache never appeared"
+seed=$(cat "$CB_FAIL/codexbar_antigravity_usage.json")
+out=$(env NOW_EPOCH="$T0" CLAUDE_STATUS_FILE="$DIR/none.json" CODEX_SESSIONS_DIR="$DIR/no-dir" GROK_CACHE_FILE="$DIR/no-cache-fail.json" GROK_FETCH_CMD="false" CODEXBAR_MODE=fail CODEXBAR_BIN="$DIR/codexbar" CODEXBAR_CACHE_DIR="$CB_FAIL" "$SCRIPT" --antigravity)
+[ "$out" = "antigravity █░░░░░░░░░ 6%/38% │ @$TS0" ] || fail "CodexBar cache fallback: got '$out'"
+sleep 0.5  # let the (failing) background refresh finish
+[ "$(cat "$CB_FAIL/codexbar_antigravity_usage.json")" = "$seed" ] || fail "a failed refresh must not touch the cache"
 
-# 6) native providers are enabled by default but can be disabled individually
+# 6) offline Antigravity data must not clobber a known-good cache (not rendered
+#    as a fake 0% either)
+CB_OFFLINE="$DIR/codexbar-cache-offline"
+env NOW_EPOCH="$T0" CLAUDE_STATUS_FILE="$DIR/none.json" CODEX_SESSIONS_DIR="$DIR/no-dir" GROK_CACHE_FILE="$DIR/no-cache-offline-seed.json" GROK_FETCH_CMD="false" CODEXBAR_BIN="$DIR/codexbar" CODEXBAR_CACHE_DIR="$CB_OFFLINE" "$SCRIPT" --antigravity >/dev/null
+wait_for_file "$CB_OFFLINE/codexbar_antigravity_usage.json" || fail "offline test: seed cache never appeared"
+seed=$(cat "$CB_OFFLINE/codexbar_antigravity_usage.json")
+out=$(env NOW_EPOCH="$T0" CLAUDE_STATUS_FILE="$DIR/none.json" CODEX_SESSIONS_DIR="$DIR/no-dir" GROK_CACHE_FILE="$DIR/no-cache-offline.json" GROK_FETCH_CMD="false" CODEXBAR_MODE=offline CODEXBAR_BIN="$DIR/codexbar" CODEXBAR_CACHE_DIR="$CB_OFFLINE" "$SCRIPT" --antigravity)
+[ "$out" = "antigravity █░░░░░░░░░ 6%/38% │ @$TS0" ] || fail "offline Antigravity: got '$out'"
+sleep 0.5
+[ "$(cat "$CB_OFFLINE/codexbar_antigravity_usage.json")" = "$seed" ] || fail "an offline snapshot must not overwrite the known-good cache"
+
+# 7) rapid repeated ticks share one in-flight CodexBar fetch (lock dedup) instead
+#    of piling up a background process per tick
+CB_DEDUP="$DIR/codexbar-cache-dedup"
+CALLS="$DIR/codexbar-calls.log"
+: > "$CALLS"
+for i in 1 2 3; do
+  env NOW_EPOCH="$T0" CLAUDE_STATUS_FILE="$DIR/none.json" CODEX_SESSIONS_DIR="$DIR/no-dir" GROK_CACHE_FILE="$DIR/no-cache-dedup$i.json" GROK_FETCH_CMD="false" CODEXBAR_BIN="$DIR/codexbar" CODEXBAR_CACHE_DIR="$CB_DEDUP" CODEXBAR_CALL_LOG="$CALLS" CODEXBAR_SLEEP=0.4 "$SCRIPT" --antigravity >/dev/null
+done
+sleep 0.6
+calls=$(wc -l < "$CALLS" | tr -d ' ')
+[ "$calls" = "1" ] || fail "rapid ticks should share one in-flight CodexBar fetch, got $calls call(s)"
+
+# 8) native providers are enabled by default but can be disabled individually
 out=$("${base[@]}" GROK_FETCH_CMD="false" "$SCRIPT" --no-claude --no-grok)
 [ "$out" = "codex ███░░░░░░░ 32% │ @$TS0" ] || fail "provider disable: got '$out'"
 out=$("${base[@]}" GROK_FETCH_CMD="false" "$SCRIPT" --no-claude --no-codex --no-grok)
 [ "$out" = "" ] || fail "all native providers disabled: got '$out'"
 
-# 7) grok fetch 실패 → 캐시 fallback
+# 9) grok fetch 실패 → 캐시 fallback
 out=$("${base[@]}" GROK_FETCH_CMD="false" "$SCRIPT")
 [ "$out" = "claude █░░░░░░░░░ 12%/30% │ codex ███░░░░░░░ 32% │ grok █░░░░░░░░░ 5% │ @$TS0" ] || fail "grok 캐시 fallback: got '$out'"
 
-# 8) 스테일 마커 — NOW_EPOCH = mtime + 25h
+# 10) 스테일 마커 — NOW_EPOCH = mtime + 25h
 out=$(env NOW_EPOCH="$T1" CLAUDE_STATUS_FILE="$DIR/statusline.json" CODEX_SESSIONS_DIR="$DIR/sessions" GROK_CACHE_FILE="$DIR/grok_cache.json" GROK_FETCH_CMD="false" "$SCRIPT")
 [ "$out" = "claude █░░░░░░░░░ 12%/30%* │ codex ███░░░░░░░ 32%* │ grok █░░░░░░░░░ 5%* │ @$TS1" ] || fail "스테일 마커: got '$out'"
 
-# 9) 전부 결측 → 빈 출력 (타임스탬프도 없음)
+# 11) 전부 결측 → 빈 출력 (타임스탬프도 없음)
 out=$(env NOW_EPOCH="$T0" CLAUDE_STATUS_FILE="$DIR/none.json" CODEX_SESSIONS_DIR="$DIR/no-dir" GROK_CACHE_FILE="$DIR/no-cache.json" GROK_FETCH_CMD="false" "$SCRIPT")
 [ "$out" = "" ] || fail "전부 결측: got '$out'"
 
-# 10) 깨진 claude JSON + garbage grok 응답 내성
+# 12) 깨진 claude JSON + garbage grok 응답 내성
 printf '{"rate_limits":{"five_h' > "$DIR/broken.json"
 out=$(env NOW_EPOCH="$T0" CLAUDE_STATUS_FILE="$DIR/broken.json" CODEX_SESSIONS_DIR="$DIR/sessions" GROK_CACHE_FILE="$DIR/no-cache2.json" GROK_FETCH_CMD="echo not-json" "$SCRIPT")
 [ "$out" = "codex ███░░░░░░░ 32% │ @$TS0" ] || fail "깨진 JSON: got '$out'"
 
-# 11) 게이지 경계 하한 — 0%는 빈 게이지 (게이지는 5h 값 기준)
+# 13) 게이지 경계 하한 — 0%는 빈 게이지 (게이지는 5h 값 기준)
 cat > "$DIR/edge.json" <<'EOF'
 {"rate_limits":{"five_hour":{"used_percentage":0},"seven_day":{"used_percentage":100}}}
 EOF
 out=$(env NOW_EPOCH="$T0" CLAUDE_STATUS_FILE="$DIR/edge.json" CODEX_SESSIONS_DIR="$DIR/no-dir" GROK_CACHE_FILE="$DIR/no-cache3.json" GROK_FETCH_CMD="false" "$SCRIPT")
 [ "$out" = "claude ░░░░░░░░░░ 0%/100% │ @$TS0" ] || fail "게이지 하한: got '$out'"
 
-# 12) 게이지 경계 상한 — 100%는 5칸 꽉 참
+# 14) 게이지 경계 상한 — 100%는 5칸 꽉 참
 cat > "$DIR/edge-full.json" <<'EOF'
 {"rate_limits":{"five_hour":{"used_percentage":100},"seven_day":{"used_percentage":0}}}
 EOF
 out=$(env NOW_EPOCH="$T0" CLAUDE_STATUS_FILE="$DIR/edge-full.json" CODEX_SESSIONS_DIR="$DIR/no-dir" GROK_CACHE_FILE="$DIR/no-cache4.json" GROK_FETCH_CMD="false" "$SCRIPT")
 [ "$out" = "claude ██████████ 100%/0% │ @$TS0" ] || fail "게이지 상한: got '$out'"
 
-# 13) 손상 codex jsonl(비-UTF8 바이트) — 크래시 없이 해당 세그먼트만 생략
+# 15) 손상 codex jsonl(비-UTF8 바이트) — 크래시 없이 해당 세그먼트만 생략
 mkdir -p "$DIR/bad-sessions/2026/08/26"
 printf '\xff\xfe\x00garbage' > "$DIR/bad-sessions/2026/08/26/rollout-corrupt.jsonl"
 out=$(env NOW_EPOCH="$T0" CLAUDE_STATUS_FILE="$DIR/statusline.json" CODEX_SESSIONS_DIR="$DIR/bad-sessions" GROK_CACHE_FILE="$DIR/no-cache5.json" GROK_FETCH_CMD="false" "$SCRIPT")
 [ "$out" = "claude █░░░░░░░░░ 12%/30% │ @$TS0" ] || fail "손상 codex jsonl: got '$out'"
 
-# 14) --color — 브랜드 컬러 SGR 3종 + dim 타임스탬프 + 리셋
+# 16) --color — 브랜드 컬러 SGR 3종 + dim 타임스탬프 + 리셋
 out=$("${base[@]}" GROK_FETCH_CMD="cat '$DIR/billing.json'" "$SCRIPT" --color)
 esc=$(printf '\033')
 case "$out" in
@@ -126,9 +168,9 @@ case "$out" in
   *) fail "--color 출력: got '$out'" ;;
 esac
 
-# 15) --12h — 12시간제 타임스탬프 (예: 3:04pm, 정오/자정 lstrip 확인은 T0 값에 의존하지 않음)
+# 17) --12h — 12시간제 타임스탬프 (예: 3:04pm, 정오/자정 lstrip 확인은 T0 값에 의존하지 않음)
 TS0_12=$(fmt_i12 "$T0")
 out=$("${base[@]}" GROK_FETCH_CMD="cat '$DIR/billing.json'" "$SCRIPT" --12h)
 [ "$out" = "claude █░░░░░░░░░ 12%/30% │ codex ███░░░░░░░ 32% │ grok █░░░░░░░░░ 5% │ @$TS0_12" ] || fail "--12h 포맷: got '$out'"
 
-echo "PASS (15/15)"
+echo "PASS (17/17)"
