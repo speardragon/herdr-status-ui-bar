@@ -79,6 +79,21 @@ class MatchEntryTests(unittest.TestCase):
         self.assertFalse(opts["codex"])
         self.assertTrue(opts["droid"])
 
+    def test_agent_status_gauge_flags(self):
+        entry = L.parse_inline_table(
+            '{ type = "command", command = "~/.config/herdr/agent-usage/agent_usage.py --no-gauge --gauge-width 8" }'
+        )
+        bid, opts = L.match_entry(entry)
+        self.assertEqual(bid, "agent-status")
+        self.assertFalse(opts["gauge"])
+        self.assertEqual(opts["gauge_width"], 8)
+
+    def test_agent_status_gauge_width_without_value_is_unmatched(self):
+        entry = L.parse_inline_table(
+            '{ type = "command", command = "~/.config/herdr/agent-usage/agent_usage.py --gauge-width" }'
+        )
+        self.assertIsNone(L.match_entry(entry))
+
     def test_zoom_is_not_matched(self):
         self.assertIsNone(L.match_entry({"type": "zoom"}))
 
@@ -93,6 +108,9 @@ class ManagedCommandTests(unittest.TestCase):
         )
         self.assertTrue(
             L.is_managed_strict("~/.config/herdr/agent-usage/agent_usage.py --no-grok --antigravity")
+        )
+        self.assertTrue(
+            L.is_managed_strict("~/.config/herdr/agent-usage/agent_usage.py --no-gauge --gauge-width 8")
         )
         self.assertTrue(
             L.is_managed_strict("curl -s --max-time 2 'wttr.in/Seoul?format=%c+%t' 2>/dev/null")
@@ -181,6 +199,8 @@ class DumpLoadRoundTripTests(unittest.TestCase):
                 "grok": False,
                 "droid": True,
                 "antigravity": True,
+                "gauge": False,
+                "gauge_width": 8,
             },
         ])
         self.assertEqual(L._parse(L.dump(blocks)) and L.canonical_layout(L._parse(L.dump(blocks))), blocks)
@@ -230,8 +250,47 @@ class WidgetTomlTests(unittest.TestCase):
         })
         self.assertIn("agent_usage.py --no-claude --no-codex --no-grok --droid --antigravity", command)
 
+    def test_agent_status_gauge_overrides(self):
+        command = L.widget_toml({"id": "agent-status", "gauge": False, "gauge_width": 8})
+        self.assertIn("agent_usage.py --no-gauge --gauge-width 8", command)
+
+    def test_agent_status_gauge_width_alone_keeps_gauge_on(self):
+        command = L.widget_toml({"id": "agent-status", "gauge_width": 3})
+        self.assertNotIn("--no-gauge", command)
+        self.assertIn("--gauge-width 3", command)
+
     def test_tab_id_has_no_jq(self):
         self.assertNotIn("jq", L.widget_toml({"id": "herdr-tab-id"}))
+
+
+class BlockLabelTests(unittest.TestCase):
+    def test_default_agent_status_label_lists_native_providers(self):
+        self.assertEqual(
+            L.block_label({"id": "agent-status", "enabled": True}),
+            "Agent status (claude / codex / grok)",
+        )
+
+    def test_label_reflects_disabled_and_enabled_providers(self):
+        label = L.block_label({
+            "id": "agent-status",
+            "enabled": True,
+            "claude": False,
+            "antigravity": True,
+        })
+        self.assertEqual(label, "Agent status (codex / grok / antigravity)")
+
+    def test_label_when_nothing_selected(self):
+        label = L.block_label({
+            "id": "agent-status",
+            "enabled": True,
+            "claude": False,
+            "codex": False,
+            "grok": False,
+        })
+        self.assertEqual(label, "Agent status (none selected)")
+
+    def test_other_widgets_keep_static_label(self):
+        self.assertEqual(L.block_label({"id": "weather"}), "Weather")
 
 
 class PreserveAndRenderTests(unittest.TestCase):

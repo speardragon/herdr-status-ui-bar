@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """herdr 탭 바 위젯: AI 에이전트 플랜 한도 사용률 (자체 구현, 무설치).
 
-출력 예: "claude █░░░░░░░░░ 12%/30% │ codex ███░░░░░░░ 32% │ grok █░░░░░░░░░ 8% │ @12:48"
-        (claude 5h/7d · codex 30일 · grok 크레딧 — 게이지 10칸 = 사용률, │ = 세그먼트 구분선, @HH:MM = 데이터 읽은 시각)
+출력 예: "claude ██░░░░ 12%/30% │ codex ██░░░░ 32% │ grok █░░░░░ 8% │ @12:48"
+        (claude 5h/7d · codex 30일 · grok 크레딧 — 게이지 6칸(기본) = 사용률, │ = 세그먼트 구분선, @HH:MM = 데이터 읽은 시각)
         --color 플래그 시 세그먼트별 브랜드 컬러(truecolor SGR) + dim 타임스탬프.
+        --no-gauge: 게이지 바 자체를 생략(퍼센트 텍스트만). --gauge-width N: 게이지 칸 수 변경(기본 6).
 - claude: statusline 캡처 파일(~/.claude/.last-statusline.json) — 로컬
 - codex:  ~/.codex/sessions/**/*.jsonl 마지막 rate_limits — 로컬
 - grok:   CLI-proxy billing REST 1콜(curl --max-time 2), 실패 시 마지막 성공 캐시
@@ -11,6 +12,12 @@
 - antigravity: optional CodexBar JSON provider (enable with --antigravity)
 - claude/codex/grok: enabled by default; disable individually with --no-claude,
                   --no-codex, or --no-grok
+- droid/antigravity never block the widget tick: each call reads the on-disk
+  cache only and, if no refresh is already in flight (lock file), spawns a
+  detached background process (--codexbar-refresh-worker) that calls CodexBar
+  and updates the cache for the *next* tick. CodexBar itself can take several
+  seconds — longer than herdr's widget timeout — so the fetch must never run
+  on the synchronous path.
 - 소스가 없거나 파싱 실패한 세그먼트는 조용히 생략, 전부 없으면 빈 줄.
 - 스테일 마커 *: claude 6h · codex 24h · grok/CodexBar 캐시 6h 초과 시.
 테스트 오버라이드: CLAUDE_STATUS_FILE, CODEX_SESSIONS_DIR, GROK_AUTH_FILE,
@@ -26,7 +33,6 @@ import shutil
 import subprocess
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -34,7 +40,8 @@ CLAUDE_STALE_SECS = 6 * 3600
 CODEX_STALE_SECS = 24 * 3600
 GROK_STALE_SECS = 6 * 3600
 CODEXBAR_STALE_SECS = 6 * 3600
-CODEXBAR_TIMEOUT_SECS = 4
+CODEXBAR_TIMEOUT_SECS = 20  # generous: runs in a detached worker, never blocks a widget tick
+CODEXBAR_LOCK_STALE_SECS = 60  # ignore a lock older than this — assume the worker died
 CODEX_SCAN_LIMIT = 5  # 최신 N개 세션 파일 안에서 rate_limits를 못 찾으면 포기
 GROK_BILLING_URL = "https://cli-chat-proxy.grok.com/v1/billing?format=credits"
 
@@ -50,14 +57,24 @@ def pct(value) -> str | None:
     return None
 
 
-GAUGE_CELLS = 10
+GAUGE_CELLS = 6  # --gauge-width overrides this; the customize popup caps providers at 3
+                 # at a time, so this stays readable without a narrow tab bar getting cut
+SHOW_GAUGE = True  # --no-gauge disables the bar entirely (percent text only)
 
 
 def gauge(value) -> str:
-    """0–100 값을 █░ 10칸 게이지로 — 0 초과면 최소 1칸은 채운다."""
+    """0–100 값을 █░ N칸 게이지로 — 0 초과면 최소 1칸은 채운다. --no-gauge 시 빈 문자열."""
+    if not SHOW_GAUGE:
+        return ""
     clamped = min(100, max(0, value)) if isinstance(value, (int, float)) else 0
     filled = 0 if clamped <= 0 else min(GAUGE_CELLS, max(1, round(clamped / 100 * GAUGE_CELLS)))
     return "█" * filled + "░" * (GAUGE_CELLS - filled)
+
+
+def with_gauge(label: str, value, tail: str) -> str:
+    """`label [gauge] tail`을 조립한다 — 게이지가 꺼져 있으면 빈칸 없이 생략."""
+    bar = gauge(value)
+    return f"{label} {bar} {tail}" if bar else f"{label} {tail}"
 
 
 BRAND_RGB = {
@@ -91,7 +108,7 @@ def claude_segment() -> str | None:
         return None
     gauge_value = five_hour_raw if five_hour is not None else seven_day_raw  # 게이지는 5h 우선
     stale = "*" if now() - mtime > CLAUDE_STALE_SECS else ""
-    return f"claude {gauge(gauge_value)} {five_hour or '-'}/{seven_day or '-'}{stale}"
+    return with_gauge("claude", gauge_value, f"{five_hour or '-'}/{seven_day or '-'}{stale}")
 
 
 # ---------- codex ----------
@@ -137,7 +154,7 @@ def codex_segment() -> str | None:
                 continue
             if used is not None:
                 stale = "*" if now() - mtime > CODEX_STALE_SECS else ""
-                return f"codex {gauge(used)} {pct(used)}{stale}"
+                return with_gauge("codex", used, f"{pct(used)}{stale}")
     return None
 
 
@@ -229,7 +246,7 @@ def grok_segment() -> str | None:
             tmp.replace(cache)
         except OSError:
             pass
-        return f"grok {gauge(used)} {pct(used)}"
+        return with_gauge("grok", used, pct(used))
     # fetch 실패 → 마지막 성공 캐시 fallback
     try:
         cached = json.loads(cache.read_text())
@@ -240,7 +257,7 @@ def grok_segment() -> str | None:
     if used is None:
         return None
     stale = "*" if now() - mtime > GROK_STALE_SECS else ""
-    return f"grok {gauge(used)} {pct(used)}{stale}"
+    return with_gauge("grok", used, f"{pct(used)}{stale}")
 
 
 # ---------- optional CodexBar providers ----------
@@ -313,7 +330,7 @@ def rate_segment(label: str, five_hour, weekly, stale: bool = False) -> str | No
         return None
     gauge_value = five_hour if five_hour is not None else weekly
     suffix = "*" if stale else ""
-    return f"{label} {gauge(gauge_value)} {pct(five_hour) or '-'}/{pct(weekly) or '-'}{suffix}"
+    return with_gauge(label, gauge_value, f"{pct(five_hour) or '-'}/{pct(weekly) or '-'}{suffix}")
 
 
 def duration_windows(usage: dict) -> dict:
@@ -386,51 +403,128 @@ def antigravity_segment(entry, stale: bool = False) -> str | None:
     return rate_segment("antigravity", windows.get(300), windows.get(10080), stale)
 
 
-def codexbar_segment(provider: str) -> str | None:
-    cache = codexbar_cache_path(provider)
-    payload = codexbar_fetch(provider)
-    entry = codexbar_entry(payload, provider)
-    formatter = factory_segment if provider == "droid" else antigravity_segment
-    text = formatter(entry) if entry else None
-    if text:
-        tmp = cache.with_name(f"{cache.name}.{os.getpid()}.tmp")
+def codexbar_lock_path(provider: str) -> Path:
+    return codexbar_cache_path(provider).with_suffix(".lock")
+
+
+def codexbar_worker_running(provider: str) -> bool:
+    """A recent lock file means a refresh is already in flight for this provider."""
+    try:
+        age = now() - codexbar_lock_path(provider).stat().st_mtime
+    except OSError:
+        return False
+    return age < CODEXBAR_LOCK_STALE_SECS
+
+
+def codexbar_spawn_refresh(provider: str) -> None:
+    """Kick off a detached background refresh; never blocks the calling widget tick."""
+    if codexbar_worker_running(provider):
+        return
+    lock = codexbar_lock_path(provider)
+    try:
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        lock.touch()
+    except OSError:
+        return
+    try:
+        subprocess.Popen(
+            [sys.executable, str(Path(__file__).resolve()), "--codexbar-refresh-worker", provider],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError:
         try:
-            cache.parent.mkdir(parents=True, exist_ok=True)
-            tmp.write_text(json.dumps(payload))
-            tmp.replace(cache)
+            lock.unlink()
         except OSError:
             pass
-        return text
 
-    # Fetch failure or an offline/unknown response → last known usable result.
+
+def codexbar_refresh_worker(provider: str) -> None:
+    """Runs detached from the widget tick — fetches CodexBar and updates the cache.
+
+    Only a successfully formatted result replaces the cache, so a failed or
+    offline/unknown response never overwrites the last known-good snapshot.
+    """
+    try:
+        payload = codexbar_fetch(provider)
+        entry = codexbar_entry(payload, provider)
+        formatter = factory_segment if provider == "droid" else antigravity_segment
+        if entry and formatter(entry):
+            cache = codexbar_cache_path(provider)
+            tmp = cache.with_name(f"{cache.name}.{os.getpid()}.tmp")
+            try:
+                cache.parent.mkdir(parents=True, exist_ok=True)
+                tmp.write_text(json.dumps(payload))
+                tmp.replace(cache)
+            except OSError:
+                pass
+    finally:
+        try:
+            codexbar_lock_path(provider).unlink()
+        except OSError:
+            pass
+
+
+def codexbar_segment(provider: str) -> str | None:
+    """Cache-only read on the widget's synchronous path — never calls CodexBar directly.
+
+    CodexBar can take several seconds, longer than herdr's widget timeout, so the
+    actual fetch always happens in a detached background worker (see
+    codexbar_spawn_refresh); this only reads whatever that worker last wrote.
+    """
+    if codexbar_binary():
+        codexbar_spawn_refresh(provider)
+    cache = codexbar_cache_path(provider)
     try:
         cached = json.loads(cache.read_text())
         mtime = cache.stat().st_mtime
     except (OSError, json.JSONDecodeError):
         return None
-    cached_entry = codexbar_entry(cached, provider)
-    text = formatter(cached_entry, now() - mtime > CODEXBAR_STALE_SECS) if cached_entry else None
-    return text
+    entry = codexbar_entry(cached, provider)
+    if entry is None:
+        return None
+    formatter = factory_segment if provider == "droid" else antigravity_segment
+    return formatter(entry, now() - mtime > CODEXBAR_STALE_SECS)
 
 
 def main() -> None:
-    args = set(sys.argv[1:])
+    argv = sys.argv[1:]
+    if "--codexbar-refresh-worker" in argv:
+        idx = argv.index("--codexbar-refresh-worker")
+        provider = argv[idx + 1] if idx + 1 < len(argv) else ""
+        if provider in ("droid", "antigravity"):
+            codexbar_refresh_worker(provider)
+        return
+
+    global GAUGE_CELLS, SHOW_GAUGE
+    if "--no-gauge" in argv:
+        SHOW_GAUGE = False
+    if "--gauge-width" in argv:
+        idx = argv.index("--gauge-width")
+        if idx + 1 < len(argv):
+            try:
+                GAUGE_CELLS = max(1, min(20, int(argv[idx + 1])))
+            except ValueError:
+                pass
+
+    args = set(argv)
     color = "--color" in args
     hour12 = "--12h" in args
     optional = [provider for provider in ("droid", "antigravity") if f"--{provider}" in args]
 
-    # CodexBar can be slower than the other local segments. Fetch optional providers
-    # concurrently so enabling both does not add their latencies together.
-    with ThreadPoolExecutor(max_workers=len(optional) or 1) as pool:
-        futures = {provider: pool.submit(codexbar_segment, provider) for provider in optional}
-        named = []
-        if "--no-claude" not in args:
-            named.append(("claude", claude_segment()))
-        if "--no-codex" not in args:
-            named.append(("codex", codex_segment()))
-        if "--no-grok" not in args:
-            named.append(("grok", grok_segment()))
-        named.extend((provider, futures[provider].result()) for provider in optional)
+    named = []
+    if "--no-claude" not in args:
+        named.append(("claude", claude_segment()))
+    if "--no-codex" not in args:
+        named.append(("codex", codex_segment()))
+    if "--no-grok" not in args:
+        named.append(("grok", grok_segment()))
+    # codexbar_segment only reads the on-disk cache (see its docstring) — a
+    # background worker owns the actual CodexBar fetch, so this is as cheap
+    # as the other segments and needs no concurrency here.
+    named.extend((provider, codexbar_segment(provider)) for provider in optional)
 
     parts = [colorize(name, text) if color else text for name, text in named if text]
     if parts:

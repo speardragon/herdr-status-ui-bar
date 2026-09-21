@@ -55,5 +55,23 @@ class PreviewOutputsTest(unittest.TestCase):
         self.assertEqual(outputs[0]["text"], "")
 
 
+class ProviderCapTest(unittest.TestCase):
+    """MAX_ENABLED_PROVIDERS 가드가 기대하는 카운트를 내는지 — curses 루프 자체(Space
+    입력에서 실제로 막는지)는 자동화하기 어려워 수동으로 확인한다."""
+
+    def test_default_block_is_at_the_cap(self):
+        # claude/codex/grok 기본 켬(3) = MAX_ENABLED_PROVIDERS, droid/antigravity 기본 꺼짐.
+        self.assertEqual(C._enabled_provider_count({"id": "agent-status", "enabled": True}), 3)
+        self.assertEqual(C._enabled_provider_count({"id": "agent-status", "enabled": True}), C.MAX_ENABLED_PROVIDERS)
+
+    def test_count_reflects_explicit_overrides(self):
+        block = {"id": "agent-status", "enabled": True, "claude": False, "antigravity": True}
+        self.assertEqual(C._enabled_provider_count(block), 3)  # codex, grok, antigravity
+
+    def test_gauge_is_not_counted_as_a_provider(self):
+        block = {"id": "agent-status", "enabled": True, "gauge": False}
+        self.assertEqual(C._enabled_provider_count(block), 3)
+
+
 if __name__ == "__main__":
     unittest.main()
