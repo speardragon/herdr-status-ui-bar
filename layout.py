@@ -3,8 +3,9 @@
 
 이 플러그인이 제공하는 위젯은 딱 세 개(agent-status / weather / herdr-tab-id)뿐이다.
 사용자가 그 위젯을 config.toml에 갖고 있지 않아도 팝업에는 항상 세 개가 모두 나오며,
-사용자는 켜고/끄고/순서만 정한다. 그 밖의 tab_bar_right 항목(예: zoom, 사용자 스크립트)은
-이 플러그인이 관리하지 않고 render_config가 원문 그대로 보존한다 — 팝업에는 나오지 않는다.
+사용자는 켜고/끄고/순서만 정한다. agent-status의 provider는 layout.toml에서 직접 켜고 끈다.
+그 밖의 tab_bar_right 항목(예: zoom, 사용자 스크립트)은 이 플러그인이
+관리하지 않고 render_config가 원문 그대로 보존한다 — 팝업에는 나오지 않는다.
 
 layout.toml은 이 플러그인이 직접 정의한 좁은 스키마만 다룬다(일반 TOML 파서가 아님) —
 우리가 쓴 파일만 우리가 읽으므로 tomllib(3.11+) 의존을 피하고 python3.9+ 약속을 지킨다.
@@ -12,22 +13,27 @@ layout.toml은 이 플러그인이 직접 정의한 좁은 스키마만 다룬�
 블록 하나 = { "id": "<catalog-id>", "enabled": bool, ...옵션 }
   weather는 "city", 셋 다 "interval_seconds"/"timeout_seconds"로 기본값을 덮어쓸 수 있다.
 배열 안에서의 순서 = 탭 바에서 (보존된 비관리 항목들 다음) 왼쪽부터의 순서.
+agent-status의 provider 옵션은 명시한 대로 선택하며, claude/codex/grok은 기본 켜짐,
+droid/antigravity는 기본 꺼짐이다.
 """
 from __future__ import annotations
 
 import re
+import shlex
 from pathlib import Path
 
 CATALOG = {
     "agent-status": {
-        "label": "Agent status (claude / codex / grok)",
+        "label": "Agent status (claude / codex / grok / droid / antigravity)",
         "default_interval": 300,
         "default_timeout": 5,
-        "command": lambda block: (
-            "~/.config/herdr/agent-usage/agent_usage.py --12h"
-            if block.get("hour12")
-            else "~/.config/herdr/agent-usage/agent_usage.py"
-        ),
+        "command": lambda block: "~/.config/herdr/agent-usage/agent_usage.py"
+        + (" --12h" if block.get("hour12") else "")
+        + (" --no-claude" if block.get("claude") is False else "")
+        + (" --no-codex" if block.get("codex") is False else "")
+        + (" --no-grok" if block.get("grok") is False else "")
+        + (" --droid" if block.get("droid") else "")
+        + (" --antigravity" if block.get("antigravity") else ""),
     },
     "weather": {
         "label": "Weather",
@@ -49,7 +55,18 @@ CATALOG = {
 CATALOG_ORDER = ("agent-status", "weather", "herdr-tab-id")
 
 _LEGACY_TAB_ID_COMMAND = "herdr api snapshot 2>/dev/null | jq -r '.result.snapshot.focused_pane_id'"
-_LEGACY_AGENT_STATUS_COMMAND = "~/.config/herdr/agent_usage.py"
+_AGENT_STATUS_COMMANDS = {
+    "~/.config/herdr/agent_usage.py",
+    "~/.config/herdr/agent-usage/agent_usage.py",
+}
+_AGENT_STATUS_FLAGS = {
+    "--12h": ("hour12", True),
+    "--no-claude": ("claude", False),
+    "--no-codex": ("codex", False),
+    "--no-grok": ("grok", False),
+    "--droid": ("droid", True),
+    "--antigravity": ("antigravity", True),
+}
 
 # 정확히 우리 형식(도시만 다를 수 있음)인 weather 커맨드.
 _WEATHER_RE = re.compile(
@@ -89,6 +106,23 @@ def _carry_overrides(opts: dict, entry: dict, spec: dict) -> None:
         opts["timeout_seconds"] = timeout
 
 
+def _agent_status_options(command: str) -> dict | None:
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return None
+    if not tokens or tokens[0] not in _AGENT_STATUS_COMMANDS:
+        return None
+    opts = {}
+    for flag in tokens[1:]:
+        option = _AGENT_STATUS_FLAGS.get(flag)
+        if option is None:
+            return None
+        key, value = option
+        opts[key] = value
+    return opts
+
+
 def match_entry(entry) -> tuple[str, dict] | None:
     """파싱된 tab_bar_right 항목 하나가 카탈로그 블록과 일치하면 (id, 옵션)을 준다.
 
@@ -112,14 +146,8 @@ def match_entry(entry) -> tuple[str, dict] | None:
         _carry_overrides(opts, entry, CATALOG["herdr-tab-id"])
         return ("herdr-tab-id", opts)
 
-    if cmd in (
-        _LEGACY_AGENT_STATUS_COMMAND,
-        CATALOG["agent-status"]["command"]({}),
-        CATALOG["agent-status"]["command"]({"hour12": True}),
-    ):
-        opts = {}
-        if cmd == CATALOG["agent-status"]["command"]({"hour12": True}):
-            opts["hour12"] = True
+    opts = _agent_status_options(cmd)
+    if opts is not None:
         _carry_overrides(opts, entry, CATALOG["agent-status"])
         return ("agent-status", opts)
 
@@ -132,13 +160,7 @@ def is_managed_strict(cmd: str) -> bool:
         return True
     if cmd in (_LEGACY_TAB_ID_COMMAND, CATALOG["herdr-tab-id"]["command"]({})):
         return True
-    if cmd in (
-        _LEGACY_AGENT_STATUS_COMMAND,
-        CATALOG["agent-status"]["command"]({}),
-        CATALOG["agent-status"]["command"]({"hour12": True}),
-    ):
-        return True
-    return False
+    return _agent_status_options(cmd) is not None
 
 
 def is_weather_broad(cmd: str) -> bool:
@@ -306,8 +328,12 @@ def dump(blocks: list[dict]) -> str:
         lines.append(f'enabled = {"true" if block.get("enabled", True) else "false"}')
         if block["id"] == "weather" and block.get("city"):
             lines.append(f'city = {_toml_quote(block["city"])}')
-        if block["id"] == "agent-status" and block.get("hour12"):
-            lines.append("hour12 = true")
+        if block["id"] == "agent-status":
+            if block.get("hour12"):
+                lines.append("hour12 = true")
+            for provider in ("claude", "codex", "grok", "droid", "antigravity"):
+                if provider in block:
+                    lines.append(f'{provider} = {"true" if block[provider] else "false"}')
         if "interval_seconds" in block:
             lines.append(f'interval_seconds = {int(block["interval_seconds"])}')
         if "timeout_seconds" in block:

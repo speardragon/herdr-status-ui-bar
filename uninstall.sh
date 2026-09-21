@@ -90,7 +90,8 @@ fi
 # --- 에셋 정리: agent-status 전용 파일만 지운다. weather나 herdr-tab-id가 아직 켜져 있으면
 #     layout.toml을 남기고(재설치/재편집 시 선택 기억), herdr-tab-id면 tab_id.py도 남긴다 ---
 rm -f "$DEST_DIR/agent_usage.py" "$DEST_DIR/statusline-wrapper.sh" \
-      "$DEST_DIR/statusline-original.sh" "$DEST_DIR/statusline-original.json"
+      "$DEST_DIR/statusline-original.sh" "$DEST_DIR/statusline-original.json" \
+      "$DEST_DIR"/codexbar_*_usage.json
 rm -f "$CONFIG_DIR/grok_usage_cache.json"   # agent-status가 만든 캐시 (생성 데이터라 안전)
 
 [ "$KEEP_TAB_ID" = "1" ] || rm -f "$DEST_DIR/tab_id.py"

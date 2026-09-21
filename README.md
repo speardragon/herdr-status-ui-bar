@@ -1,6 +1,6 @@
 # herdr-status-ui-bar
 
-Plan-usage gauges for your AI coding agents — **Claude Code, OpenAI Codex, and Grok CLI** — rendered in the [herdr](https://herdr.dev) tab bar, plus a popup to customize the whole tab bar's layout.
+Plan-usage gauges for your AI coding agents — **Claude Code, OpenAI Codex, and Grok CLI**, plus optional **Factory Droid and Antigravity** — rendered in the [herdr](https://herdr.dev) tab bar, plus a popup to customize the whole tab bar's layout.
 
 ![herdr tab bar with the focused pane id, weather, and the claude / codex / grok usage gauges](docs/tab-bar.png)
 
@@ -13,7 +13,7 @@ Plan-usage gauges for your AI coding agents — **Claude Code, OpenAI Codex, and
 - `grok credit%` — one lightweight call to the Grok CLI billing API, cached with graceful fallback
 - gauge = 10 cells (10% each); ` │ ` separates each agent segment (also before the timestamp)
 - `@HH:MM` — when the data was read (the widget refreshes every 5 minutes) · `*` — the source data is stale
-- Segments for agents you don't use are silently omitted. Zero external dependencies beyond python3 (3.9+) and curl.
+- Segments for agents you don't use are silently omitted. The base widget needs only python3 (3.9+) and curl; optional Droid/Antigravity segments use [CodexBar](https://github.com/steipete/CodexBar) when enabled.
 
 ## Install
 
@@ -66,7 +66,7 @@ order:
 
 | Widget | Shows | Options |
 |---|---|---|
-| `agent-status` | the gauges described above | `hour12` (default off, 24h clock) |
+| `agent-status` | the gauges described above | `hour12` (default off, 24h clock); provider toggles below |
 | `weather` | `curl`'d from [wttr.in](https://wttr.in) | `city` (default `Seoul`) |
 | `herdr-tab-id` | the focused pane id (`herdr api snapshot`, parsed in Python — no `jq`) | — |
 
@@ -105,17 +105,37 @@ On first install, the plugin detects which of the three widgets you already have
 and starts them enabled (`agent-status` is on by default); the rest are off but
 still listed in the popup. Options beyond `city`, `hour12`, and per-widget
 `interval_seconds`/`timeout_seconds` aren't in the popup yet — edit `layout.toml`
-by hand for those.
+by hand for those. Provider toggles also live on the `agent-status` block. Omitted
+native providers (`claude`, `codex`, `grok`) default to enabled for backwards
+compatibility; omitted CodexBar providers (`droid`, `antigravity`) default to disabled:
+
+```toml
+[[blocks]]
+id = "agent-status"
+enabled = true
+claude = true
+codex = false
+grok = true
+droid = true
+antigravity = false
+```
+
+CodexBar must be installed and available as `codexbar` on `PATH` (or set
+`CODEXBAR_BIN`). The popup preserves these settings but does not edit them.
 
 ## Data sources
 
-Fetching approach credits: [CodexBar](https://github.com/steipete/CodexBar)
+The native readers are inspired by the fetching approach documented by
+[CodexBar](https://github.com/steipete/CodexBar). The optional providers invoke
+CodexBar's JSON CLI output (`factory` is displayed as `droid`).
 
 | Agent | Source | Locality | Updated when |
 |---|---|---|---|
 | Claude Code | statusline capture file | local | every statusline render (live while you use Claude Code) |
 | Codex | `~/.codex/sessions` rollout logs (JSONL) | local | whenever the Codex CLI writes a session |
 | Grok | CLI-proxy billing REST, one call | network | each widget tick (5 min), cached on failure |
+| Factory Droid | CodexBar `factory` JSON | CLI/API | each widget tick when enabled, cached on failure |
+| Antigravity | CodexBar `antigravity` JSON | CLI/API | each widget tick when enabled, cached on failure |
 
 The Grok token is never passed as a curl argument — it's sent via stdin config (`-K -`), so it never shows up in `ps`. No credential is ever written to a log or to stdout.
 
@@ -124,6 +144,7 @@ The Grok token is never passed as a curl argument — it's sent via stdin config
 - As of herdr 0.8.x, the tab bar does not render ANSI escapes from command widgets, so output there is always plain text. `--color` exists for running the script directly in a terminal.
 - If you've never used the Codex CLI, the codex segment is simply omitted (sessions are its only data source). A `*` means your most recent Codex session is older than 24 hours — use the CLI again and it clears.
 - The claude segment requires an existing Claude Code statusline; without one it's simply omitted.
+- Claude, Codex, and Grok are enabled by default but can be disabled in `layout.toml`. Droid and Antigravity are opt-in and require CodexBar. If CodexBar is unavailable, times out, or returns unknown/offline data, the segment is omitted or falls back to its last successful cache. Antigravity's offline conversation count is not treated as a quota percentage.
 - Exotic `config.toml` layouts (for example, brackets inside a widget's command string) aren't handled by the installer's bracket-counting parser — it detects this, makes no changes, and prints instructions for adding the widget line by hand.
 
 ## Uninstall

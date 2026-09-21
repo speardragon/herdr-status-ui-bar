@@ -69,6 +69,16 @@ class MatchEntryTests(unittest.TestCase):
         self.assertEqual(bid, "agent-status")
         self.assertTrue(opts["hour12"])
 
+    def test_agent_status_provider_flags(self):
+        entry = L.parse_inline_table(
+            '{ type = "command", command = "~/.config/herdr/agent-usage/agent_usage.py --no-claude --no-codex --droid" }'
+        )
+        bid, opts = L.match_entry(entry)
+        self.assertEqual(bid, "agent-status")
+        self.assertFalse(opts["claude"])
+        self.assertFalse(opts["codex"])
+        self.assertTrue(opts["droid"])
+
     def test_zoom_is_not_matched(self):
         self.assertIsNone(L.match_entry({"type": "zoom"}))
 
@@ -80,6 +90,9 @@ class ManagedCommandTests(unittest.TestCase):
         self.assertTrue(L.is_managed_strict("~/.config/herdr/agent_usage.py"))
         self.assertTrue(
             L.is_managed_strict("~/.config/herdr/agent-usage/agent_usage.py --12h")
+        )
+        self.assertTrue(
+            L.is_managed_strict("~/.config/herdr/agent-usage/agent_usage.py --no-grok --antigravity")
         )
         self.assertTrue(
             L.is_managed_strict("curl -s --max-time 2 'wttr.in/Seoul?format=%c+%t' 2>/dev/null")
@@ -159,7 +172,16 @@ class DumpLoadRoundTripTests(unittest.TestCase):
         blocks = L.canonical_layout([
             {"id": "weather", "enabled": True, "city": "Busan", "interval_seconds": 120},
             {"id": "herdr-tab-id", "enabled": False},
-            {"id": "agent-status", "enabled": True, "hour12": True},
+            {
+                "id": "agent-status",
+                "enabled": True,
+                "hour12": True,
+                "claude": False,
+                "codex": True,
+                "grok": False,
+                "droid": True,
+                "antigravity": True,
+            },
         ])
         self.assertEqual(L._parse(L.dump(blocks)) and L.canonical_layout(L._parse(L.dump(blocks))), blocks)
 
@@ -197,6 +219,17 @@ class WidgetTomlTests(unittest.TestCase):
             L.widget_toml({"id": "agent-status", "hour12": True}),
         )
 
+    def test_agent_status_provider_overrides(self):
+        command = L.widget_toml({
+            "id": "agent-status",
+            "claude": False,
+            "codex": False,
+            "grok": False,
+            "droid": True,
+            "antigravity": True,
+        })
+        self.assertIn("agent_usage.py --no-claude --no-codex --no-grok --droid --antigravity", command)
+
     def test_tab_id_has_no_jq(self):
         self.assertNotIn("jq", L.widget_toml({"id": "herdr-tab-id"}))
 
@@ -220,6 +253,14 @@ class PreserveAndRenderTests(unittest.TestCase):
         cfg = "[ui]\ntab_bar_right = [\n  { type = \"command\", command = \"curl -s 'wttr.in?format=%c'\" },\n]\n"
         self.assertEqual(len(R.preserved_entries(cfg, weather_enabled=False)), 1)
         self.assertEqual(len(R.preserved_entries(cfg, weather_enabled=True)), 0)
+
+    def test_agent_status_provider_variant_is_managed(self):
+        cfg = (
+            "[ui]\ntab_bar_right = [\n"
+            '  { type = "command", command = "~/.config/herdr/agent-usage/agent_usage.py --no-grok --droid" },\n'
+            "]\n"
+        )
+        self.assertEqual(R.preserved_entries(cfg, weather_enabled=False), [])
 
     def test_body_puts_preserved_first_then_enabled(self):
         blocks = L.canonical_layout([{"id": "agent-status", "enabled": True}])
