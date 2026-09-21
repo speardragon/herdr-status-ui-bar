@@ -14,13 +14,23 @@ layout.toml은 이 플러그인이 직접 정의한 좁은 스키마만 다룬�
   weather는 "city", 셋 다 "interval_seconds"/"timeout_seconds"로 기본값을 덮어쓸 수 있다.
 배열 안에서의 순서 = 탭 바에서 (보존된 비관리 항목들 다음) 왼쪽부터의 순서.
 agent-status의 provider 옵션은 명시한 대로 선택하며, claude/codex/grok은 기본 켜짐,
-droid/antigravity는 기본 꺼짐이다.
+droid/antigravity는 기본 꺼짐이다. gauge(게이지 바 표시)는 기본 켜짐, gauge_width는
+미지정 시 agent_usage.py 기본값(5칸)을 따른다.
 """
 from __future__ import annotations
 
 import re
 import shlex
 from pathlib import Path
+
+PROVIDER_FIELDS = (
+    # (key, label, default enabled)
+    ("claude", "Claude", True),
+    ("codex", "Codex", True),
+    ("grok", "Grok", True),
+    ("droid", "Droid (via CodexBar)", False),
+    ("antigravity", "Antigravity (via CodexBar)", False),
+)
 
 CATALOG = {
     "agent-status": {
@@ -33,7 +43,9 @@ CATALOG = {
         + (" --no-codex" if block.get("codex") is False else "")
         + (" --no-grok" if block.get("grok") is False else "")
         + (" --droid" if block.get("droid") else "")
-        + (" --antigravity" if block.get("antigravity") else ""),
+        + (" --antigravity" if block.get("antigravity") else "")
+        + (" --no-gauge" if block.get("gauge") is False else "")
+        + (f" --gauge-width {int(block['gauge_width'])}" if block.get("gauge_width") else ""),
     },
     "weather": {
         "label": "Weather",
@@ -66,6 +78,11 @@ _AGENT_STATUS_FLAGS = {
     "--no-grok": ("grok", False),
     "--droid": ("droid", True),
     "--antigravity": ("antigravity", True),
+    "--no-gauge": ("gauge", False),
+}
+# 값이 뒤따르는 플래그(불리언이 아님) — 별도 처리.
+_AGENT_STATUS_VALUE_FLAGS = {
+    "--gauge-width": "gauge_width",
 }
 
 # 정확히 우리 형식(도시만 다를 수 있음)인 weather 커맨드.
@@ -81,6 +98,9 @@ def block_command(block: dict) -> str:
 
 
 def block_label(block: dict) -> str:
+    if block["id"] == "agent-status":
+        enabled = [name for name, _, default in PROVIDER_FIELDS if block.get(name, default)]
+        return "Agent status (%s)" % (" / ".join(enabled) if enabled else "none selected")
     return CATALOG[block["id"]]["label"]
 
 
@@ -114,12 +134,25 @@ def _agent_status_options(command: str) -> dict | None:
     if not tokens or tokens[0] not in _AGENT_STATUS_COMMANDS:
         return None
     opts = {}
-    for flag in tokens[1:]:
+    i = 1
+    while i < len(tokens):
+        flag = tokens[i]
+        opt_key = _AGENT_STATUS_VALUE_FLAGS.get(flag)
+        if opt_key is not None:
+            if i + 1 >= len(tokens):
+                return None
+            try:
+                opts[opt_key] = int(tokens[i + 1])
+            except ValueError:
+                return None
+            i += 2
+            continue
         option = _AGENT_STATUS_FLAGS.get(flag)
         if option is None:
             return None
         key, value = option
         opts[key] = value
+        i += 1
     return opts
 
 
@@ -331,9 +364,11 @@ def dump(blocks: list[dict]) -> str:
         if block["id"] == "agent-status":
             if block.get("hour12"):
                 lines.append("hour12 = true")
-            for provider in ("claude", "codex", "grok", "droid", "antigravity"):
+            for provider in ("claude", "codex", "grok", "droid", "antigravity", "gauge"):
                 if provider in block:
                     lines.append(f'{provider} = {"true" if block[provider] else "false"}')
+            if block.get("gauge_width"):
+                lines.append(f'gauge_width = {int(block["gauge_width"])}')
         if "interval_seconds" in block:
             lines.append(f'interval_seconds = {int(block["interval_seconds"])}')
         if "timeout_seconds" in block:

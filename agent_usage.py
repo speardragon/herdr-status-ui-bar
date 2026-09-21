@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """herdr 탭 바 위젯: AI 에이전트 플랜 한도 사용률 (자체 구현, 무설치).
 
-출력 예: "claude █░░░░░░░░░ 12%/30% │ codex ███░░░░░░░ 32% │ grok █░░░░░░░░░ 8% │ @12:48"
-        (claude 5h/7d · codex 30일 · grok 크레딧 — 게이지 10칸 = 사용률, │ = 세그먼트 구분선, @HH:MM = 데이터 읽은 시각)
+출력 예: "claude ██░░░ 12%/30% │ codex ██░░░ 32% │ grok █░░░░ 8% │ @12:48"
+        (claude 5h/7d · codex 30일 · grok 크레딧 — 게이지 5칸(기본) = 사용률, │ = 세그먼트 구분선, @HH:MM = 데이터 읽은 시각)
         --color 플래그 시 세그먼트별 브랜드 컬러(truecolor SGR) + dim 타임스탬프.
+        --no-gauge: 게이지 바 자체를 생략(퍼센트 텍스트만). --gauge-width N: 게이지 칸 수 변경(기본 5).
 - claude: statusline 캡처 파일(~/.claude/.last-statusline.json) — 로컬
 - codex:  ~/.codex/sessions/**/*.jsonl 마지막 rate_limits — 로컬
 - grok:   CLI-proxy billing REST 1콜(curl --max-time 2), 실패 시 마지막 성공 캐시
@@ -56,14 +57,23 @@ def pct(value) -> str | None:
     return None
 
 
-GAUGE_CELLS = 10
+GAUGE_CELLS = 5  # --gauge-width overrides this; kept short by default to save tab-bar width
+SHOW_GAUGE = True  # --no-gauge disables the bar entirely (percent text only)
 
 
 def gauge(value) -> str:
-    """0–100 값을 █░ 10칸 게이지로 — 0 초과면 최소 1칸은 채운다."""
+    """0–100 값을 █░ N칸 게이지로 — 0 초과면 최소 1칸은 채운다. --no-gauge 시 빈 문자열."""
+    if not SHOW_GAUGE:
+        return ""
     clamped = min(100, max(0, value)) if isinstance(value, (int, float)) else 0
     filled = 0 if clamped <= 0 else min(GAUGE_CELLS, max(1, round(clamped / 100 * GAUGE_CELLS)))
     return "█" * filled + "░" * (GAUGE_CELLS - filled)
+
+
+def with_gauge(label: str, value, tail: str) -> str:
+    """`label [gauge] tail`을 조립한다 — 게이지가 꺼져 있으면 빈칸 없이 생략."""
+    bar = gauge(value)
+    return f"{label} {bar} {tail}" if bar else f"{label} {tail}"
 
 
 BRAND_RGB = {
@@ -97,7 +107,7 @@ def claude_segment() -> str | None:
         return None
     gauge_value = five_hour_raw if five_hour is not None else seven_day_raw  # 게이지는 5h 우선
     stale = "*" if now() - mtime > CLAUDE_STALE_SECS else ""
-    return f"claude {gauge(gauge_value)} {five_hour or '-'}/{seven_day or '-'}{stale}"
+    return with_gauge("claude", gauge_value, f"{five_hour or '-'}/{seven_day or '-'}{stale}")
 
 
 # ---------- codex ----------
@@ -143,7 +153,7 @@ def codex_segment() -> str | None:
                 continue
             if used is not None:
                 stale = "*" if now() - mtime > CODEX_STALE_SECS else ""
-                return f"codex {gauge(used)} {pct(used)}{stale}"
+                return with_gauge("codex", used, f"{pct(used)}{stale}")
     return None
 
 
@@ -235,7 +245,7 @@ def grok_segment() -> str | None:
             tmp.replace(cache)
         except OSError:
             pass
-        return f"grok {gauge(used)} {pct(used)}"
+        return with_gauge("grok", used, pct(used))
     # fetch 실패 → 마지막 성공 캐시 fallback
     try:
         cached = json.loads(cache.read_text())
@@ -246,7 +256,7 @@ def grok_segment() -> str | None:
     if used is None:
         return None
     stale = "*" if now() - mtime > GROK_STALE_SECS else ""
-    return f"grok {gauge(used)} {pct(used)}{stale}"
+    return with_gauge("grok", used, f"{pct(used)}{stale}")
 
 
 # ---------- optional CodexBar providers ----------
@@ -319,7 +329,7 @@ def rate_segment(label: str, five_hour, weekly, stale: bool = False) -> str | No
         return None
     gauge_value = five_hour if five_hour is not None else weekly
     suffix = "*" if stale else ""
-    return f"{label} {gauge(gauge_value)} {pct(five_hour) or '-'}/{pct(weekly) or '-'}{suffix}"
+    return with_gauge(label, gauge_value, f"{pct(five_hour) or '-'}/{pct(weekly) or '-'}{suffix}")
 
 
 def duration_windows(usage: dict) -> dict:
@@ -486,6 +496,17 @@ def main() -> None:
         if provider in ("droid", "antigravity"):
             codexbar_refresh_worker(provider)
         return
+
+    global GAUGE_CELLS, SHOW_GAUGE
+    if "--no-gauge" in argv:
+        SHOW_GAUGE = False
+    if "--gauge-width" in argv:
+        idx = argv.index("--gauge-width")
+        if idx + 1 < len(argv):
+            try:
+                GAUGE_CELLS = max(1, min(20, int(argv[idx + 1])))
+            except ValueError:
+                pass
 
     args = set(argv)
     color = "--color" in args

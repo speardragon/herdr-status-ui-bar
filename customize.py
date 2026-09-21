@@ -51,29 +51,28 @@ def missing_scripts() -> list[str]:
     return [name for name in REQUIRED_SCRIPTS if not (dest_dir() / name).exists()]
 
 
-def fetch_preview_outputs(blocks: list[dict]) -> dict[int, dict]:
-    """블록별로 실제 커맨드를 한 번 실행해서 미리보기용 출력/상태를 얻는다.
+def fetch_one_output(block: dict) -> dict:
+    """블록 하나의 실제 커맨드를 실행해서 미리보기용 출력/상태를 얻는다.
 
-    각 항목은 {"text": str, "error": str | None}. error는 커맨드 실행 자체가 실패했거나
+    {"text": str, "error": str | None}. error는 커맨드 실행 자체가 실패했거나
     (파일 없음 등) 비정상 종료(exit != 0)했을 때만 채운다 — 정상 종료했지만 stdout이
     그냥 비어있는 경우(예: 사용하지 않는 agent 세그먼트, 네트워크 실패 시 조용히 빈
     문자열을 내는 weather의 `2>/dev/null`)는 기존과 같이 error 없이 그대로 둔다.
     """
-    outputs: dict[int, dict] = {}
-    for i, block in enumerate(blocks):
-        cmd = L.block_command(block)
-        try:
-            proc = subprocess.run(["/bin/sh", "-c", cmd], capture_output=True, text=True, timeout=PREVIEW_TIMEOUT)
-        except subprocess.TimeoutExpired:
-            outputs[i] = {"text": "", "error": f"timed out after {PREVIEW_TIMEOUT}s"}
-            continue
-        except OSError as exc:
-            outputs[i] = {"text": "", "error": str(exc)}
-            continue
-        text = proc.stdout.strip().splitlines()[0] if proc.stdout.strip() else ""
-        error = f"exit {proc.returncode}" if proc.returncode != 0 else None
-        outputs[i] = {"text": text, "error": error}
-    return outputs
+    cmd = L.block_command(block)
+    try:
+        proc = subprocess.run(["/bin/sh", "-c", cmd], capture_output=True, text=True, timeout=PREVIEW_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return {"text": "", "error": f"timed out after {PREVIEW_TIMEOUT}s"}
+    except OSError as exc:
+        return {"text": "", "error": str(exc)}
+    text = proc.stdout.strip().splitlines()[0] if proc.stdout.strip() else ""
+    error = f"exit {proc.returncode}" if proc.returncode != 0 else None
+    return {"text": text, "error": error}
+
+
+def fetch_preview_outputs(blocks: list[dict]) -> dict[int, dict]:
+    return {i: fetch_one_output(block) for i, block in enumerate(blocks)}
 
 
 def render_preview_line(blocks: list[dict], outputs: dict[int, dict]) -> str:
@@ -89,6 +88,49 @@ def render_preview_line(blocks: list[dict], outputs: dict[int, dict]) -> str:
     return SEPARATOR.join(parts) if parts else "(no plugin widgets enabled)"
 
 
+# agent-status의 하위 옵션 — provider on/off + 게이지 바 표시 여부. (key, label, 기본값)
+PROVIDER_ROWS = [(name, label, default) for name, label, default in L.PROVIDER_FIELDS] + [
+    ("gauge", "Show gauge bar", True),
+]
+
+
+def run_provider_picker(stdscr, block: dict) -> None:
+    """agent-status 행에서 열리는 서브 화면 — provider·게이지 표시를 개별 토글한다.
+
+    block을 제자리에서 변형한다(뮤테이션). 호출부가 돌아온 뒤 해당 블록의 미리보기를
+    다시 가져와야 한다 — 여기서는 커맨드를 실행하지 않는다.
+    """
+    cursor = 0
+    while True:
+        stdscr.erase()
+        height, width = stdscr.getmaxyx()
+        x = PAD_X
+        usable_width = max(1, width - 2 * PAD_X)
+        stdscr.addstr(PAD_Y, x, "Agent status — providers"[:usable_width], curses.A_BOLD)
+        stdscr.addstr(PAD_Y + 1, x, "[↑/↓] move  [Space] toggle  [Enter/Esc] back"[:usable_width])
+        list_top = PAD_Y + 3
+        for i, (key, label, default) in enumerate(PROVIDER_ROWS):
+            row = list_top + i
+            if row >= height - PAD_Y:
+                break
+            mark = "x" if block.get(key, default) else " "
+            line = f"[{mark}] {label}"[:usable_width]
+            attr = curses.A_REVERSE if i == cursor else curses.A_NORMAL
+            stdscr.addstr(row, x, line, attr)
+        stdscr.refresh()
+
+        key_in = stdscr.getch()
+        if key_in in (curses.KEY_UP, ord("k")):
+            cursor = (cursor - 1) % len(PROVIDER_ROWS)
+        elif key_in in (curses.KEY_DOWN, ord("j")):
+            cursor = (cursor + 1) % len(PROVIDER_ROWS)
+        elif key_in == ord(" "):
+            pkey, _, default = PROVIDER_ROWS[cursor]
+            block[pkey] = not block.get(pkey, default)
+        elif key_in in (curses.KEY_ENTER, 10, 13, 27, ord("q"), curses.KEY_LEFT):
+            return
+
+
 def run(stdscr, blocks: list[dict]) -> list[dict] | None:
     curses.curs_set(0)
     stdscr.keypad(True)
@@ -101,7 +143,7 @@ def run(stdscr, blocks: list[dict]) -> list[dict] | None:
         x = PAD_X
         usable_width = max(1, width - 2 * PAD_X)
         stdscr.addstr(PAD_Y, x, "herdr-status-ui-bar — customize tab bar"[:usable_width], curses.A_BOLD)
-        stdscr.addstr(PAD_Y + 1, x, "[↑/↓] move  [Space] toggle  [K/J] reorder  [R] reset all  [Enter] apply  [Esc] cancel"[:usable_width])
+        stdscr.addstr(PAD_Y + 1, x, "[↑/↓] move  [Space] toggle  [K/J] reorder  [→] providers  [R] reset all  [Enter] apply  [Esc] cancel"[:usable_width])
 
         list_top = PAD_Y + 3
         for i, block in enumerate(blocks):
@@ -126,6 +168,9 @@ def run(stdscr, blocks: list[dict]) -> list[dict] | None:
             cursor = (cursor + 1) % len(blocks) if blocks else 0
         elif key == ord(" ") and blocks:
             blocks[cursor]["enabled"] = not blocks[cursor].get("enabled", True)
+        elif key in (curses.KEY_RIGHT, ord("l")) and blocks and blocks[cursor]["id"] == "agent-status":
+            run_provider_picker(stdscr, blocks[cursor])
+            outputs[cursor] = fetch_one_output(blocks[cursor])
         elif key == ord("K") and blocks and cursor > 0:
             blocks[cursor - 1], blocks[cursor] = blocks[cursor], blocks[cursor - 1]
             outputs[cursor - 1], outputs[cursor] = outputs.get(cursor), outputs.get(cursor - 1)
