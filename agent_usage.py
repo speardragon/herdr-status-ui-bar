@@ -30,6 +30,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import http.client
 import json
 import math
@@ -38,6 +39,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -52,6 +54,7 @@ CURSOR_REFRESH_SECS = 5 * 60
 CURSOR_TIMEOUT_SECS = 2
 CURSOR_AUTH_MAX_BYTES = 1024 * 1024
 CURSOR_RESPONSE_MAX_BYTES = 64 * 1024
+CURSOR_CACHE_MAX_BYTES = 4096
 CURSOR_URL_HOST = "api2.cursor.sh"
 CURSOR_URL_PATH = "/aiserver.v1.DashboardService/GetCurrentPeriodUsage"
 CODEX_SCAN_LIMIT = 5  # 최신 N개 세션 파일 안에서 rate_limits를 못 찾으면 포기
@@ -429,18 +432,30 @@ def cursor_auth_paths() -> list[Path]:
 
 
 def cursor_auth_token() -> str | None:
+    explicit_path = bool(os.environ.get("CURSOR_AUTH_FILE"))
     for path in cursor_auth_paths():
         try:
-            raw = path.read_bytes()
-            if len(raw) > CURSOR_AUTH_MAX_BYTES:
-                continue
-            data = json.loads(raw)
-        except (OSError, ValueError):
+            with path.open("rb") as stream:
+                raw = stream.read(CURSOR_AUTH_MAX_BYTES + 1)
+        except FileNotFoundError:
+            if explicit_path:
+                return None
             continue
+        except OSError:
+            return None
+        if len(raw) > CURSOR_AUTH_MAX_BYTES:
+            return None
+        try:
+            data = json.loads(raw)
+        except (ValueError, RecursionError):
+            return None
         token = data.get("accessToken") if isinstance(data, dict) else None
         if isinstance(token, str) and token.strip():
             return token.strip()
+        return None
 
+    if explicit_path:
+        return None
     if sys.platform == "darwin" and not os.environ.get("CURSOR_STATE_DB"):
         return None
     if os.environ.get("CURSOR_STATE_DB"):
@@ -481,6 +496,10 @@ def _bounded_cursor_percent(value) -> float | None:
     return number if number is not None and 0 <= number <= 100 else None
 
 
+def _cursor_session_fingerprint(access_token: str) -> str:
+    return hashlib.sha256(b"cursor-session\0" + access_token.encode("utf-8")).hexdigest()
+
+
 def parse_cursor_usage(payload) -> dict | None:
     if not isinstance(payload, dict) or not isinstance(payload.get("planUsage"), dict):
         return None
@@ -492,20 +511,15 @@ def parse_cursor_usage(payload) -> dict | None:
     else:
         limit = _cursor_number(plan.get("limit"))
         if limit is not None and limit > 0:
-            for key, field in (
-                ("includedSpend", "included"),
-                ("remaining", "remaining"),
-                ("used", "used"),
-            ):
-                value = _cursor_number(plan.get(key))
-                if value is not None:
-                    if field == "remaining":
-                        percent = (limit - value) / limit * 100
-                    else:
-                        percent = value / limit * 100
-                    if math.isfinite(percent):
-                        metrics["included"] = min(100.0, max(0.0, percent))
-                        break
+            spend = _cursor_number(plan.get("includedSpend"))
+            remaining = _cursor_number(plan.get("remaining"))
+            used = _cursor_number(plan.get("used"))
+            if spend is not None and spend >= 0:
+                metrics["included"] = min(100.0, spend / limit * 100)
+            elif remaining is not None and 0 <= remaining <= limit:
+                metrics["included"] = (limit - remaining) / limit * 100
+            elif used is not None and used >= 0:
+                metrics["included"] = min(100.0, used / limit * 100)
     for source, target in (("autoPercentUsed", "auto"), ("apiPercentUsed", "api")):
         value = _bounded_cursor_percent(plan.get(source))
         if value is not None:
@@ -546,17 +560,49 @@ def cursor_lock_path() -> Path:
     return cursor_cache_path().with_suffix(".lock")
 
 
+def _read_cursor_json(path: Path, max_bytes: int) -> dict | None:
+    try:
+        with path.open("rb") as stream:
+            raw = stream.read(max_bytes + 1)
+        if len(raw) > max_bytes:
+            return None
+        value = json.loads(raw)
+        return value if isinstance(value, dict) else None
+    except (OSError, ValueError, RecursionError):
+        return None
+
+
+def _cursor_attempt_is_recent(session: str) -> bool:
+    attempt_path = cursor_attempt_path()
+    attempt = _read_cursor_json(attempt_path, 1024)
+    if not attempt or attempt.get("session") != session:
+        return False
+    try:
+        age = now() - attempt_path.stat().st_mtime
+    except OSError:
+        return False
+    return 0 <= age < CURSOR_REFRESH_SECS
+
+
+def _record_cursor_attempt(session: str) -> None:
+    _write_private(cursor_attempt_path(), json.dumps({"session": session, "attempted_at": now()}))
+
+
 def _write_private(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-    fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
     try:
+        os.fchmod(fd, 0o600)
         with os.fdopen(fd, "w") as stream:
             stream.write(content)
-        os.replace(temp, path)
-    except Exception:
+        os.replace(temp_name, path)
+    except BaseException:
         try:
-            temp.unlink()
+            os.close(fd)
+        except OSError:
+            pass
+        try:
+            os.unlink(temp_name)
         except OSError:
             pass
         raise
@@ -583,22 +629,25 @@ def cursor_post_json(access_token: str) -> dict | None:
             return None
         payload = json.loads(raw)
         return payload if isinstance(payload, dict) else None
-    except (OSError, ValueError, http.client.HTTPException):
+    except (OSError, ValueError, RecursionError, http.client.HTTPException):
         return None
     finally:
         connection.close()
 
 
 def cursor_worker() -> None:
-    attempt = cursor_attempt_path()
     try:
-        attempt.parent.mkdir(parents=True, exist_ok=True)
-        _write_private(attempt, str(now()))
         token = cursor_auth_token()
-        payload = cursor_post_json(token) if token else None
+        if not token:
+            return
+        session = _cursor_session_fingerprint(token)
+        _record_cursor_attempt(session)
+        payload = cursor_post_json(token)
         metrics = parse_cursor_usage(payload) if payload else None
         if metrics:
-            _write_private(cursor_cache_path(), json.dumps({"fetched_at": now(), "metrics": metrics}))
+            _write_private(cursor_cache_path(), json.dumps({
+                "fetched_at": now(), "session": session, "metrics": metrics,
+            }))
     finally:
         try:
             cursor_lock_path().unlink()
@@ -613,7 +662,7 @@ def cursor_worker_running() -> bool:
         return False
 
 
-def cursor_spawn_refresh() -> None:
+def cursor_spawn_refresh(session: str) -> None:
     if cursor_worker_running():
         return
     lock = cursor_lock_path()
@@ -630,6 +679,10 @@ def cursor_spawn_refresh() -> None:
     except OSError:
         return
     try:
+        if _cursor_attempt_is_recent(session):
+            lock.unlink()
+            return
+        _record_cursor_attempt(session)
         subprocess.Popen(
             [sys.executable, str(Path(__file__).resolve()), "--cursor-refresh-worker"],
             stdin=subprocess.DEVNULL,
@@ -645,21 +698,21 @@ def cursor_spawn_refresh() -> None:
 
 
 def cursor_cached_segment() -> str | None:
+    token = cursor_auth_token()
+    if not token:
+        return None
+    session = _cursor_session_fingerprint(token)
     cache = cursor_cache_path()
+    entry = _read_cursor_json(cache, CURSOR_CACHE_MAX_BYTES)
     try:
-        entry = json.loads(cache.read_text())
         mtime = cache.stat().st_mtime
-    except (OSError, ValueError):
-        entry, mtime = None, 0
-    metrics = entry.get("metrics") if isinstance(entry, dict) else None
-    if not isinstance(metrics, dict) or cursor_segment(metrics) is None:
-        metrics = None
-    try:
-        attempt_age = now() - cursor_attempt_path().stat().st_mtime
     except OSError:
-        attempt_age = CURSOR_REFRESH_SECS
-    if now() - mtime >= CURSOR_REFRESH_SECS and attempt_age >= CURSOR_REFRESH_SECS:
-        cursor_spawn_refresh()
+        mtime = 0
+    metrics = entry.get("metrics") if isinstance(entry, dict) else None
+    if not isinstance(metrics, dict) or entry.get("session") != session or cursor_segment(metrics) is None:
+        metrics = None
+    if (metrics is None or now() - mtime >= CURSOR_REFRESH_SECS) and not _cursor_attempt_is_recent(session):
+        cursor_spawn_refresh(session)
     if metrics is None:
         return None
     return cursor_segment(metrics, now() - mtime >= CURSOR_REFRESH_SECS)
