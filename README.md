@@ -112,7 +112,7 @@ by hand for those.
 ### Provider picker
 
 With the cursor on the `agent-status` row, press `→` to open a sub-screen that
-toggles each provider (`claude`/`codex`/`grok`/`droid`/`antigravity`) and the
+toggles each provider (`claude`/`codex`/`grok`/`droid`/`antigravity`/`cursor`) and the
 gauge bar itself, individually — `Space` to toggle, `Enter`/`Esc`/`←` to go back.
 Only 3 providers can be enabled at once (trying a 4th shows a reminder instead
 of toggling it) — that's the tradeoff that lets the gauge bar default to a wide,
@@ -122,8 +122,8 @@ lists whichever providers are currently on, e.g. `Agent status (claude / grok)`.
 The same options live directly in `layout.toml` on the `agent-status` block if
 you'd rather edit by hand (the 3-provider cap is only enforced by the popup, not
 by `agent_usage.py` itself). Omitted native providers (`claude`, `codex`, `grok`)
-default to enabled for backwards compatibility; omitted CodexBar providers
-(`droid`, `antigravity`) default to disabled; `gauge` defaults to enabled and
+default to enabled for backwards compatibility; omitted opt-in providers
+(`droid`, `antigravity`, `cursor`) default to disabled; `gauge` defaults to enabled and
 `gauge_width` defaults to 6 cells when unset:
 
 ```toml
@@ -135,12 +135,13 @@ codex = false
 grok = true
 droid = true
 antigravity = false
+cursor = false
 gauge = true
 gauge_width = 3
 ```
 
-CodexBar must be installed and available as `codexbar` on `PATH` (or set
-`CODEXBAR_BIN`).
+`droid` and `antigravity` need CodexBar installed and available as `codexbar` on
+`PATH` (or set `CODEXBAR_BIN`). `cursor` does not use CodexBar; see the notes below.
 
 ## Data sources
 
@@ -164,7 +165,16 @@ The Grok token is never passed as a curl argument — it's sent via stdin config
 - As of herdr 0.8.x, the tab bar does not render ANSI escapes from command widgets, so output there is always plain text. `--color` exists for running the script directly in a terminal.
 - If you've never used the Codex CLI, the codex segment is simply omitted (sessions are its only data source). A `*` means your most recent Codex session is older than 24 hours — use the CLI again and it clears.
 - The claude segment requires an existing Claude Code statusline; without one it's simply omitted.
-- Claude, Codex, and Grok are enabled by default but can be disabled in `layout.toml`. Droid and Antigravity are opt-in and require CodexBar. Cursor is also opt-in; enabling it sends a POST with an empty JSON body and the existing Cursor `accessToken` to `https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage` at most once per five-minute refresh interval. The token is read from `CURSOR_AUTH_FILE`, Linux `XDG_CONFIG_HOME/cursor/auth.json` (or `~/.config/cursor/auth.json`), macOS `~/.cursor/auth.json`, or the Linux Cursor IDE `User/globalStorage/state.vscdb` entry `cursorAuth/accessToken` as a fallback. If `CURSOR_AUTH_FILE` is set but missing or invalid, the reader fails closed instead of switching to another session. Only the access token is read; no account identifier or raw response is cached or logged. The mode-0600 cache contains validated percentages and a one-way token fingerprint so stale usage is shown only for the same signed-in session. Each socket operation has a two-second timeout; because the request runs in a detached worker, total worker time may be longer. The display prefers the API's included-usage percentage (or derives it from included spend and limit); if only Auto/API percentages exist, they are labeled distinctly without claiming a time window. If Cursor is unavailable or returns invalid data, its last valid metrics remain available with a stale marker. If CodexBar is unavailable, times out, or returns unknown/offline data, the segment is omitted or falls back to its last successful cache. Antigravity's offline conversation count is not treated as a quota percentage.
+- Claude, Codex, and Grok are enabled by default but can be disabled in `layout.toml`. Droid and Antigravity are opt-in and require CodexBar. If CodexBar is unavailable, times out, or returns unknown/offline data, the segment is omitted or falls back to its last successful cache. Antigravity's offline conversation count is not treated as a quota percentage.
+- Cursor is opt-in (`--cursor`, or `cursor = true` in `layout.toml`):
+  - Enabling it sends a POST with an empty JSON body and the existing Cursor `accessToken` to `https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage` at most once per five-minute refresh interval.
+  - The token is read from `CURSOR_AUTH_FILE`, Linux `XDG_CONFIG_HOME/cursor/auth.json` (or `~/.config/cursor/auth.json`), macOS `~/.cursor/auth.json`, or the Linux Cursor IDE `User/globalStorage/state.vscdb` entry `cursorAuth/accessToken` as a fallback.
+  - If `CURSOR_AUTH_FILE` is set but missing or invalid, the reader fails closed instead of switching to another session.
+  - Only the access token is read; no account identifier or raw response is cached or logged.
+  - The mode-0600 cache contains validated percentages and a one-way token fingerprint so stale usage is shown only for the same signed-in session.
+  - Each socket operation has a two-second timeout; because the request runs in a detached worker, total worker time may be longer.
+  - The display prefers the API's included-usage percentage (or derives it from included spend and limit); if only Auto/API percentages exist, they are labeled distinctly without claiming a time window.
+  - If Cursor is unavailable or returns invalid data, its last valid metrics remain available with a stale marker.
 - Exotic `config.toml` layouts (for example, brackets inside a widget's command string) aren't handled by the installer's bracket-counting parser — it detects this, makes no changes, and prints instructions for adding the widget line by hand.
 
 ## Uninstall
