@@ -10,6 +10,7 @@
 - grok:   CLI-proxy billing REST 1콜(curl --max-time 2), 실패 시 마지막 성공 캐시
 - droid:  optional CodexBar JSON provider `factory` (enable with --droid)
 - antigravity: optional CodexBar JSON provider (enable with --antigravity)
+- cursor: optional Cursor plan usage request (enable with --cursor); local accessToken only
 - claude/codex/grok: enabled by default; disable individually with --no-claude,
                   --no-codex, or --no-grok
 - droid/antigravity never block the widget tick: each call reads the on-disk
@@ -18,6 +19,8 @@
   and updates the cache for the *next* tick. CodexBar itself can take several
   seconds — longer than herdr's widget timeout — so the fetch must never run
   on the synchronous path.
+- Cursor uses the same cache-only widget path; its detached worker reads only
+  accessToken and POSTs to Cursor over HTTPS, at most once per five-minute interval.
 - 소스가 없거나 파싱 실패한 세그먼트는 조용히 생략, 전부 없으면 빈 줄.
 - 스테일 마커 *: claude 6h · codex 24h · grok/CodexBar 캐시 6h 초과 시.
 테스트 오버라이드: CLAUDE_STATUS_FILE, CODEX_SESSIONS_DIR, GROK_AUTH_FILE,
@@ -27,11 +30,16 @@
 """
 from __future__ import annotations
 
+import hashlib
+import http.client
 import json
+import math
 import os
 import shutil
+import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -42,6 +50,13 @@ GROK_STALE_SECS = 6 * 3600
 CODEXBAR_STALE_SECS = 6 * 3600
 CODEXBAR_TIMEOUT_SECS = 20  # generous: runs in a detached worker, never blocks a widget tick
 CODEXBAR_LOCK_STALE_SECS = 60  # ignore a lock older than this — assume the worker died
+CURSOR_REFRESH_SECS = 5 * 60
+CURSOR_TIMEOUT_SECS = 2
+CURSOR_AUTH_MAX_BYTES = 1024 * 1024
+CURSOR_RESPONSE_MAX_BYTES = 64 * 1024
+CURSOR_CACHE_MAX_BYTES = 4096
+CURSOR_URL_HOST = "api2.cursor.sh"
+CURSOR_URL_PATH = "/aiserver.v1.DashboardService/GetCurrentPeriodUsage"
 CODEX_SCAN_LIMIT = 5  # 최신 N개 세션 파일 안에서 rate_limits를 못 찾으면 포기
 GROK_BILLING_URL = "https://cli-chat-proxy.grok.com/v1/billing?format=credits"
 
@@ -83,6 +98,7 @@ BRAND_RGB = {
     "grok": (229, 229, 229),    # xAI 흑백 → 밝은 회색
     "droid": (96, 165, 250),    # Factory blue
     "antigravity": (168, 85, 247),  # Google purple
+    "cursor": (120, 120, 120),
 }
 
 
@@ -403,6 +419,305 @@ def antigravity_segment(entry, stale: bool = False) -> str | None:
     return rate_segment("antigravity", windows.get(300), windows.get(10080), stale)
 
 
+# ---------- Cursor plan usage ----------
+
+def cursor_auth_paths() -> list[Path]:
+    override = os.environ.get("CURSOR_AUTH_FILE")
+    if override:
+        return [Path(override)]
+    if sys.platform == "darwin":
+        return [Path.home() / ".cursor/auth.json"]
+    config = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+    return [config / "cursor/auth.json", Path.home() / ".cursor/auth.json"]
+
+
+def cursor_auth_token() -> str | None:
+    explicit_path = bool(os.environ.get("CURSOR_AUTH_FILE"))
+    for path in cursor_auth_paths():
+        try:
+            with path.open("rb") as stream:
+                raw = stream.read(CURSOR_AUTH_MAX_BYTES + 1)
+        except FileNotFoundError:
+            if explicit_path:
+                return None
+            continue
+        except OSError:
+            return None
+        if len(raw) > CURSOR_AUTH_MAX_BYTES:
+            return None
+        try:
+            data = json.loads(raw)
+        except (ValueError, RecursionError):
+            return None
+        token = data.get("accessToken") if isinstance(data, dict) else None
+        if isinstance(token, str) and token.strip():
+            return token.strip()
+        return None
+
+    if explicit_path:
+        return None
+    if sys.platform == "darwin" and not os.environ.get("CURSOR_STATE_DB"):
+        return None
+    if os.environ.get("CURSOR_STATE_DB"):
+        db_path = Path(os.environ["CURSOR_STATE_DB"])
+    else:
+        config = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+        db_path = config / "Cursor/User/globalStorage/state.vscdb"
+    try:
+        uri = f"{db_path.resolve().as_uri()}?mode=ro"
+        db = sqlite3.connect(uri, uri=True, timeout=0.2)
+        try:
+            row = db.execute(
+                "SELECT value FROM ItemTable WHERE key = ? LIMIT 1",
+                ("cursorAuth/accessToken",),
+            ).fetchone()
+        finally:
+            db.close()
+    except (OSError, sqlite3.Error):
+        return None
+    if not row or not isinstance(row[0], (str, bytes)):
+        return None
+    token = row[0].decode("utf-8", "ignore") if isinstance(row[0], bytes) else row[0]
+    return token.strip() or None
+
+
+def _cursor_number(value) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        number = float(value)
+    except (OverflowError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _bounded_cursor_percent(value) -> float | None:
+    number = _cursor_number(value)
+    return number if number is not None and 0 <= number <= 100 else None
+
+
+def _cursor_session_fingerprint(access_token: str) -> str:
+    return hashlib.sha256(b"cursor-session\0" + access_token.encode("utf-8")).hexdigest()
+
+
+def parse_cursor_usage(payload) -> dict | None:
+    if not isinstance(payload, dict) or not isinstance(payload.get("planUsage"), dict):
+        return None
+    plan = payload["planUsage"]
+    metrics = {}
+    total = _bounded_cursor_percent(plan.get("totalPercentUsed"))
+    if total is not None:
+        metrics["included"] = total
+    else:
+        limit = _cursor_number(plan.get("limit"))
+        if limit is not None and limit > 0:
+            spend = _cursor_number(plan.get("includedSpend"))
+            remaining = _cursor_number(plan.get("remaining"))
+            used = _cursor_number(plan.get("used"))
+            if spend is not None and spend >= 0:
+                metrics["included"] = min(100.0, spend / limit * 100)
+            elif remaining is not None and 0 <= remaining <= limit:
+                metrics["included"] = (limit - remaining) / limit * 100
+            elif used is not None and used >= 0:
+                metrics["included"] = min(100.0, used / limit * 100)
+    for source, target in (("autoPercentUsed", "auto"), ("apiPercentUsed", "api")):
+        value = _bounded_cursor_percent(plan.get(source))
+        if value is not None:
+            metrics[target] = value
+    return metrics or None
+
+
+def cursor_segment(metrics: dict, stale: bool = False) -> str | None:
+    included = _bounded_cursor_percent(metrics.get("included"))
+    if included is not None:
+        suffix = "*" if stale else ""
+        return with_gauge("cursor", included, f"included {pct(included)}{suffix}")
+    auto = _bounded_cursor_percent(metrics.get("auto"))
+    api = _bounded_cursor_percent(metrics.get("api"))
+    if auto is None and api is None:
+        return None
+    details = " ".join(
+        f"{label} {pct(value)}"
+        for label, value in (("auto", auto), ("api", api))
+        if value is not None
+    )
+    return f"cursor {details}{'*' if stale else ''}"
+
+
+def cursor_cache_path() -> Path:
+    if os.environ.get("CURSOR_CACHE_FILE"):
+        return Path(os.environ["CURSOR_CACHE_FILE"])
+    root = Path(os.environ.get("CURSOR_CACHE_DIR") or Path.home() / ".config/herdr/agent-usage")
+    return root / "cursor_usage.json"
+
+
+def cursor_attempt_path() -> Path:
+    cache = cursor_cache_path()
+    return cache.with_name(cache.name + ".attempt")
+
+
+def cursor_lock_path() -> Path:
+    return cursor_cache_path().with_suffix(".lock")
+
+
+def _read_cursor_json(path: Path, max_bytes: int) -> dict | None:
+    try:
+        with path.open("rb") as stream:
+            raw = stream.read(max_bytes + 1)
+        if len(raw) > max_bytes:
+            return None
+        value = json.loads(raw)
+        return value if isinstance(value, dict) else None
+    except (OSError, ValueError, RecursionError):
+        return None
+
+
+def _cursor_attempt_is_recent(session: str) -> bool:
+    attempt_path = cursor_attempt_path()
+    attempt = _read_cursor_json(attempt_path, 1024)
+    if not attempt or attempt.get("session") != session:
+        return False
+    try:
+        age = now() - attempt_path.stat().st_mtime
+    except OSError:
+        return False
+    return 0 <= age < CURSOR_REFRESH_SECS
+
+
+def _record_cursor_attempt(session: str) -> None:
+    _write_private(cursor_attempt_path(), json.dumps({"session": session, "attempted_at": now()}))
+
+
+def _write_private(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w") as stream:
+            stream.write(content)
+        os.replace(temp_name, path)
+    except BaseException:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
+            os.unlink(temp_name)
+        except OSError:
+            pass
+        raise
+
+
+def cursor_post_json(access_token: str) -> dict | None:
+    connection = http.client.HTTPSConnection(CURSOR_URL_HOST, timeout=CURSOR_TIMEOUT_SECS)
+    try:
+        connection.request(
+            "POST",
+            CURSOR_URL_PATH,
+            "{}",
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Connect-Protocol-Version": "1",
+                "Content-Type": "application/json",
+            },
+        )
+        response = connection.getresponse()
+        if response.status != 200:
+            return None
+        raw = response.read(CURSOR_RESPONSE_MAX_BYTES + 1)
+        if len(raw) > CURSOR_RESPONSE_MAX_BYTES:
+            return None
+        payload = json.loads(raw)
+        return payload if isinstance(payload, dict) else None
+    except (OSError, ValueError, RecursionError, http.client.HTTPException):
+        return None
+    finally:
+        connection.close()
+
+
+def cursor_worker() -> None:
+    try:
+        token = cursor_auth_token()
+        if not token:
+            return
+        session = _cursor_session_fingerprint(token)
+        _record_cursor_attempt(session)
+        payload = cursor_post_json(token)
+        metrics = parse_cursor_usage(payload) if payload else None
+        if metrics:
+            _write_private(cursor_cache_path(), json.dumps({
+                "fetched_at": now(), "session": session, "metrics": metrics,
+            }))
+    finally:
+        try:
+            cursor_lock_path().unlink()
+        except OSError:
+            pass
+
+
+def cursor_worker_running() -> bool:
+    try:
+        return now() - cursor_lock_path().stat().st_mtime < CODEXBAR_LOCK_STALE_SECS
+    except OSError:
+        return False
+
+
+def cursor_spawn_refresh(session: str) -> None:
+    if cursor_worker_running():
+        return
+    lock = cursor_lock_path()
+    try:
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            lock_stat = lock.stat()
+        except OSError:
+            lock_stat = None
+        if lock_stat and now() - lock_stat.st_mtime >= CODEXBAR_LOCK_STALE_SECS:
+            lock.unlink()
+        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        os.close(fd)
+    except OSError:
+        return
+    try:
+        if _cursor_attempt_is_recent(session):
+            lock.unlink()
+            return
+        _record_cursor_attempt(session)
+        subprocess.Popen(
+            [sys.executable, str(Path(__file__).resolve()), "--cursor-refresh-worker"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError:
+        try:
+            lock.unlink()
+        except OSError:
+            pass
+
+
+def cursor_cached_segment() -> str | None:
+    token = cursor_auth_token()
+    if not token:
+        return None
+    session = _cursor_session_fingerprint(token)
+    cache = cursor_cache_path()
+    entry = _read_cursor_json(cache, CURSOR_CACHE_MAX_BYTES)
+    try:
+        mtime = cache.stat().st_mtime
+    except OSError:
+        mtime = 0
+    metrics = entry.get("metrics") if isinstance(entry, dict) else None
+    if not isinstance(metrics, dict) or entry.get("session") != session or cursor_segment(metrics) is None:
+        metrics = None
+    if (metrics is None or now() - mtime >= CURSOR_REFRESH_SECS) and not _cursor_attempt_is_recent(session):
+        cursor_spawn_refresh(session)
+    if metrics is None:
+        return None
+    return cursor_segment(metrics, now() - mtime >= CURSOR_REFRESH_SECS)
+
+
 def codexbar_lock_path(provider: str) -> Path:
     return codexbar_cache_path(provider).with_suffix(".lock")
 
@@ -491,6 +806,9 @@ def codexbar_segment(provider: str) -> str | None:
 
 def main() -> None:
     argv = sys.argv[1:]
+    if "--cursor-refresh-worker" in argv:
+        cursor_worker()
+        return
     if "--codexbar-refresh-worker" in argv:
         idx = argv.index("--codexbar-refresh-worker")
         provider = argv[idx + 1] if idx + 1 < len(argv) else ""
@@ -525,6 +843,8 @@ def main() -> None:
     # background worker owns the actual CodexBar fetch, so this is as cheap
     # as the other segments and needs no concurrency here.
     named.extend((provider, codexbar_segment(provider)) for provider in optional)
+    if "--cursor" in args:
+        named.append(("cursor", cursor_cached_segment()))
 
     parts = [colorize(name, text) if color else text for name, text in named if text]
     if parts:

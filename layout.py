@@ -14,7 +14,7 @@ layout.toml은 이 플러그인이 직접 정의한 좁은 스키마만 다룬�
   weather는 "city", 셋 다 "interval_seconds"/"timeout_seconds"로 기본값을 덮어쓸 수 있다.
 배열 안에서의 순서 = 탭 바에서 (보존된 비관리 항목들 다음) 왼쪽부터의 순서.
 agent-status의 provider 옵션은 명시한 대로 선택하며, claude/codex/grok은 기본 켜짐,
-droid/antigravity는 기본 꺼짐이다. gauge(게이지 바 표시)는 기본 켜짐, gauge_width는
+droid/antigravity/cursor는 기본 꺼짐이다. gauge(게이지 바 표시)는 기본 켜짐, gauge_width는
 미지정 시 agent_usage.py 기본값(5칸)을 따른다.
 """
 from __future__ import annotations
@@ -30,11 +30,12 @@ PROVIDER_FIELDS = (
     ("grok", "Grok", True),
     ("droid", "Droid (via CodexBar)", False),
     ("antigravity", "Antigravity (via CodexBar)", False),
+    ("cursor", "Cursor", False),
 )
 
 CATALOG = {
     "agent-status": {
-        "label": "Agent status (claude / codex / grok / droid / antigravity)",
+        "label": "Agent status (claude / codex / grok / droid / antigravity / cursor)",
         "default_interval": 300,
         "default_timeout": 5,
         "command": lambda block: "~/.config/herdr/agent-usage/agent_usage.py"
@@ -44,6 +45,8 @@ CATALOG = {
         + (" --no-grok" if block.get("grok") is False else "")
         + (" --droid" if block.get("droid") else "")
         + (" --antigravity" if block.get("antigravity") else "")
+        + (" --cursor" if block.get("cursor") else "")
+        + (" --no-cursor" if block.get("cursor") is False and "cursor" in block else "")
         + (" --no-gauge" if block.get("gauge") is False else "")
         + (f" --gauge-width {int(block['gauge_width'])}" if block.get("gauge_width") else ""),
     },
@@ -78,6 +81,8 @@ _AGENT_STATUS_FLAGS = {
     "--no-grok": ("grok", False),
     "--droid": ("droid", True),
     "--antigravity": ("antigravity", True),
+    "--cursor": ("cursor", True),
+    "--no-cursor": ("cursor", False),
     "--no-gauge": ("gauge", False),
 }
 # 값이 뒤따르는 플래그(불리언이 아님) — 별도 처리.
@@ -364,7 +369,7 @@ def dump(blocks: list[dict]) -> str:
         if block["id"] == "agent-status":
             if block.get("hour12"):
                 lines.append("hour12 = true")
-            for provider in ("claude", "codex", "grok", "droid", "antigravity", "gauge"):
+            for provider in ("claude", "codex", "grok", "droid", "antigravity", "cursor", "gauge"):
                 if provider in block:
                     lines.append(f'{provider} = {"true" if block[provider] else "false"}')
             if block.get("gauge_width"):

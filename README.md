@@ -1,6 +1,6 @@
 # herdr-status-ui-bar
 
-Plan-usage gauges for your AI coding agents — **Claude Code, OpenAI Codex, and Grok CLI**, plus optional **Factory Droid and Antigravity** — rendered in the [herdr](https://herdr.dev) tab bar, plus a popup to customize the whole tab bar's layout.
+Plan-usage gauges for your AI coding agents — **Claude Code, OpenAI Codex, and Grok CLI**, plus optional **Factory Droid, Antigravity, and Cursor** — rendered in the [herdr](https://herdr.dev) tab bar, plus a popup to customize the whole tab bar's layout.
 
 ![herdr tab bar with the focused pane id, weather, and the claude / codex / grok usage gauges](docs/tab-bar.png)
 
@@ -11,6 +11,7 @@ Plan-usage gauges for your AI coding agents — **Claude Code, OpenAI Codex, and
 - `claude 5h%/7d%` — Claude Code rate-limit windows, captured passively from your statusline (no network, no credentials)
 - `codex 30d%` — read locally from `~/.codex/sessions` rollout logs
 - `grok credit%` — one lightweight call to the Grok CLI billing API, cached with graceful fallback
+- `cursor included%` — opt-in Cursor plan usage, read from Cursor's local session and cached with graceful fallback
 - gauge = 6 cells by default (~17% each); ` │ ` separates each agent segment (also before the timestamp)
 - `@HH:MM` — when the data was read (the widget refreshes every 5 minutes) · `*` — the source data is stale
 - Segments for agents you don't use are silently omitted. The base widget needs only python3 (3.9+) and curl; optional Droid/Antigravity segments use [CodexBar](https://github.com/steipete/CodexBar) when enabled.
@@ -154,6 +155,7 @@ CodexBar's JSON CLI output (`factory` is displayed as `droid`).
 | Grok | CLI-proxy billing REST, one call | network | each widget tick (5 min), cached on failure |
 | Factory Droid | CodexBar `factory` JSON | CLI/API | each widget tick when enabled, cached on failure |
 | Antigravity | CodexBar `antigravity` JSON | CLI/API | each widget tick when enabled, cached on failure |
+| Cursor | Cursor `GetCurrentPeriodUsage` API | network (opt-in) | every 5 minutes when enabled, cached on failure |
 
 The Grok token is never passed as a curl argument — it's sent via stdin config (`-K -`), so it never shows up in `ps`. No credential is ever written to a log or to stdout.
 
@@ -162,7 +164,7 @@ The Grok token is never passed as a curl argument — it's sent via stdin config
 - As of herdr 0.8.x, the tab bar does not render ANSI escapes from command widgets, so output there is always plain text. `--color` exists for running the script directly in a terminal.
 - If you've never used the Codex CLI, the codex segment is simply omitted (sessions are its only data source). A `*` means your most recent Codex session is older than 24 hours — use the CLI again and it clears.
 - The claude segment requires an existing Claude Code statusline; without one it's simply omitted.
-- Claude, Codex, and Grok are enabled by default but can be disabled in `layout.toml`. Droid and Antigravity are opt-in and require CodexBar. If CodexBar is unavailable, times out, or returns unknown/offline data, the segment is omitted or falls back to its last successful cache. Antigravity's offline conversation count is not treated as a quota percentage.
+- Claude, Codex, and Grok are enabled by default but can be disabled in `layout.toml`. Droid and Antigravity are opt-in and require CodexBar. Cursor is also opt-in; enabling it sends a POST with an empty JSON body and the existing Cursor `accessToken` to `https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage` at most once per five-minute refresh interval. The token is read from `CURSOR_AUTH_FILE`, Linux `XDG_CONFIG_HOME/cursor/auth.json` (or `~/.config/cursor/auth.json`), macOS `~/.cursor/auth.json`, or the Linux Cursor IDE `User/globalStorage/state.vscdb` entry `cursorAuth/accessToken` as a fallback. If `CURSOR_AUTH_FILE` is set but missing or invalid, the reader fails closed instead of switching to another session. Only the access token is read; no account identifier or raw response is cached or logged. The mode-0600 cache contains validated percentages and a one-way token fingerprint so stale usage is shown only for the same signed-in session. Each socket operation has a two-second timeout; because the request runs in a detached worker, total worker time may be longer. The display prefers the API's included-usage percentage (or derives it from included spend and limit); if only Auto/API percentages exist, they are labeled distinctly without claiming a time window. If Cursor is unavailable or returns invalid data, its last valid metrics remain available with a stale marker. If CodexBar is unavailable, times out, or returns unknown/offline data, the segment is omitted or falls back to its last successful cache. Antigravity's offline conversation count is not treated as a quota percentage.
 - Exotic `config.toml` layouts (for example, brackets inside a widget's command string) aren't handled by the installer's bracket-counting parser — it detects this, makes no changes, and prints instructions for adding the widget line by hand.
 
 ## Uninstall
